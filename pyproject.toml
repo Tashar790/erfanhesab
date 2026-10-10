@@ -1,0 +1,32 @@
+[project]
+name = "erfanhesab"
+version = "6.1.0"
+description = "سیستم جامع حقوق و دستمزد عرفان حساب"
+requires-python = ">=3.9"
+authors = [
+    { name = "عرفان بلوچ" }
+]
+dependencies = [
+    "flet[all]>=0.28.0",
+    "arabic-reshaper>=3.0.0",
+    "python-bidi>=0.4.2",
+    "fpdf2>=2.7.9",
+    "Pillow>=10.0.0",
+]
+
+[tool.flet]
+org = "ir.erfanhesab"
+product = "عرفان حساب"
+company = "عرفان بلوچ"
+copyright = "© 1405 عرفان بلوچ"
+
+[tool.flet.app]
+path = "."
+
+[tool.flet.android]
+package = "ir.erfanhesab.payroll"
+
+[tool.flet.android.permission]
+"android.permission.INTERNET" = true
+"android.permission.READ_EXTERNAL_STORAGE" = true
+"android.permission.WRITE_EXTERNAL_STORAGE" = true

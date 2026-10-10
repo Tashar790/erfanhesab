@@ -1,0 +1,5 @@
+flet[all]>=0.28.0
+arabic-reshaper>=3.0.0
+python-bidi>=0.4.2
+fpdf2>=2.7.9
+Pillow>=10.0.0
