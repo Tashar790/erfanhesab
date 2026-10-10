@@ -26,16 +26,6 @@ jobs:
 
       - name: 🎯 نصب Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: 'platforms;android-34 build-tools;34.0.0'
-          accept-android-sdk-licenses: true
-
-      - name: 🦋 نصب Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.29.2'
-          channel: 'stable'
-          cache: true
 
       - name: 📦 نصب کتابخانه‌های پایتون
         run: |
@@ -44,7 +34,10 @@ jobs:
           pip install -r requirements.txt
 
       - name: 📱 ساخت APK
-        run: flet build apk --verbose
+        run: flet build apk --yes --verbose
+        env:
+          FLET_CLI_YES: '1'
+          FLET_CLI_NO_RICH_OUTPUT: '1'
 
       - name: 📤 آپلود APK
         if: success()
