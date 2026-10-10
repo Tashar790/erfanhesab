@@ -23,20 +23,16 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 🎯 نصب Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: 📜 پذیرش لایسنس‌های اندروید
-        run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-
-      - name: 🦋 نصب Flutter 3.29.2
+      - name: 🦋 نصب Flutter 3.29.2 (همراه Android SDK)
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.29.2'
           channel: 'stable'
           cache: true
+
+      - name: 📜 پذیرش لایسنس‌های Android
+        run: |
+          yes | flutter doctor --android-licenses || true
 
       - name: 📦 نصب کتابخانه‌های سیستمی
         run: |
