@@ -1,0 +1,58 @@
+[project]
+name = "erfanhesab"
+version = "6.1.0"
+description = "سیستم جامع حقوق و دستمزد عرفان حساب"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+authors = [
+    { name = "عرفان بلوچ" }
+]
+license = { text = "Proprietary" }
+dependencies = [
+    "flet==0.28.3",
+    "arabic-reshaper>=3.0.0",
+    "python-bidi>=0.4.2",
+    "fpdf2>=2.7.9",
+    "Pillow>=10.4.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# ═══════════════════════════════════════════════════════════
+# تنظیمات Flet برای ساخت APK اندروید
+# ═══════════════════════════════════════════════════════════
+
+[tool.flet]
+org = "ir.erfanhesab"
+product = "عرفان حساب"
+company = "عرفان بلوچ"
+copyright = "© 1405 عرفان بلوچ"
+
+[tool.flet.app]
+# main.py در ریشه پروژه است
+path = "."
+
+[tool.flet.android]
+# شناسه پکیج اندروید (باید یکتا باشد)
+package = "ir.erfanhesab.payroll"
+# نسخه‌ای که Android SDK باید استفاده کند
+min_sdk_version = 21
+target_sdk_version = 34
+
+[tool.flet.android.permission]
+# مجوزهای مورد نیاز برنامه
+"android.permission.INTERNET" = true
+"android.permission.READ_EXTERNAL_STORAGE" = true
+"android.permission.WRITE_EXTERNAL_STORAGE" = true
+"android.permission.READ_MEDIA_IMAGES" = true
+"android.permission.CAMERA" = true
+
+[tool.flet.ios]
+# تنظیمات iOS (اختیاری برای آینده)
+bundle_id = "ir.erfanhesab.payroll"
+
+[tool.flet.web]
+# تنظیمات وب (اختیاری)
+base_url = "/"

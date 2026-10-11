@@ -8,63 +8,55 @@ on:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
     steps:
-      - name: 📥 دریافت کد
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: 🐍 نصب Python 3.12
+      - name: Setup Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
 
-      - name: ☕ نصب Java JDK 17
+      - name: Setup Java JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: 🦋 نصب Flutter 3.29.2 (همراه Android SDK)
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.29.2'
           channel: 'stable'
           cache: true
 
-      - name: 📜 پذیرش لایسنس‌های Android
-        run: |
-          yes | flutter doctor --android-licenses || true
+      - name: Accept Android licenses
+        run: yes | flutter doctor --android-licenses || true
 
-      - name: 📦 نصب کتابخانه‌های سیستمی
+      - name: Install system libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libgtk-3-dev \
-            ninja-build \
-            pkg-config
+          sudo apt-get install -y libgtk-3-dev ninja-build pkg-config
 
-      - name: 📚 نصب کتابخانه‌های پایتون
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 📱 ساخت APK
+      - name: Build APK
         run: flet build apk --verbose
         env:
           FLET_CLI_YES: '1'
           CI: 'true'
 
-      - name: 📤 آپلود APK
+      - name: Upload APK artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: erfanhesab-apk
           path: build/apk/*.apk
+          if-no-files-found: error
           retention-days: 30
-
-      - name: 🚀 انتشار در Release (فقط با tag)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: build/apk/*.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
