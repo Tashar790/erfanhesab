@@ -27,6 +27,112 @@ except Exception:
     Image = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# ═══════════════════════ ابزارهای تاریخ شمسی (خودکفا) ═══════════════════════
+def g2j(gy, gm, gd):
+    """تبدیل میلادی → شمسی."""
+    g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    if gy > 1600:
+        jy = 979
+        gy -= 1600
+    else:
+        jy = 0
+        gy -= 621
+    gy2 = gy + 1 if gm > 2 else gy
+    days = (365 * gy + (gy2 + 3) // 4 - (gy2 + 99) // 100
+            + (gy2 + 399) // 400 - 80 + gd + g_d_m[gm - 1])
+    jy += 33 * (days // 12053)
+    days %= 12053
+    jy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jy += (days - 1) // 365
+        days = (days - 1) % 365
+    if days < 186:
+        jm = 1 + days // 31
+        jd = 1 + days % 31
+    else:
+        jm = 7 + (days - 186) // 30
+        jd = 1 + (days - 186) % 30
+    return jy, jm, jd
+
+
+def j2g(jy, jm, jd):
+    """تبدیل شمسی → میلادی (معکوس g2j)."""
+    jy += 1595
+    days = (-355668 + (365 * jy) + ((jy // 33) * 8)
+            + (((jy % 33) + 3) // 4) + jd)
+    if jm < 7:
+        days += (jm - 1) * 31
+    else:
+        days += ((jm - 7) * 30) + 186
+    gy = 400 * (days // 146097)
+    days %= 146097
+    if days > 36524:
+        days -= 1
+        gy += 100 * (days // 36524)
+        days %= 36524
+        if days >= 365:
+            days += 1
+    gy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        gy += (days - 1) // 365
+        days = (days - 1) % 365
+    gd = days + 1
+    leap = (gy % 4 == 0 and gy % 100 != 0) or (gy % 400 == 0)
+    sal_a = [0, 31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    gm = 0
+    while gm < 13 and gd > sal_a[gm]:
+        gd -= sal_a[gm]
+        gm += 1
+    return gy, gm, gd
+
+
+def jalali_weekday(jy, jm, jd):
+    """روز هفته شمسی: ۰ = شنبه، ۱ = یک‌شنبه، ... ۶ = جمعه."""
+    gy, gm, gd = j2g(jy, jm, jd)
+    return (datetime(gy, gm, gd).weekday() + 2) % 7
+
+def jalali_leap(y):
+    return (y % 33) in (1, 5, 9, 13, 17, 22, 26, 30)
+
+
+def days_in_month(year, month):
+    if 1 <= month <= 6:
+        return 31
+    if 7 <= month <= 11:
+        return 30
+    return 30 if jalali_leap(year) else 29
+
+
+def days_in_year(year):
+    return sum(days_in_month(year, m) for m in range(1, 13))
+
+
+def jalali_today_str():
+    y, m, d = today_jalali()
+    return f"{y}/{m:02d}/{d:02d}"
+
+
+def validate_jalali(s):
+    s = norm(s).replace('-', '/')
+    parts = s.split('/')
+    if len(parts) != 3:
+        return False, "قالب تاریخ: 1405/01/01"
+    try:
+        y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return False, "تاریخ باید عدد باشد"
+    if not (1300 <= y <= 1500):
+        return False, "سال 1300 تا 1500"
+    if not (1 <= m <= 12):
+        return False, "ماه ۱ تا ۱۲"
+    if not (1 <= d <= days_in_month(y, m)):
+        return False, f"روز ۱ تا {days_in_month(y, m)}"
+    return True, ""
+
+
+
 APP_TITLE = "عرفان حساب"
 # شماره نسخه عمداً در رابط کاربری نمایش داده نمی‌شود.
 DEVELOPER = "عرفان بلوچ"
@@ -94,9 +200,20 @@ def _ic(name, fallback=None):
     return None
 
 def _border_kwargs(radius=12):
+    # نسخه‌های جدید Flet: OutlineInputBorder توصیه می‌شود
     out = {}
+    try:
+        if hasattr(ft, 'OutlineInputBorder'):
+            out['border'] = ft.OutlineInputBorder(border_radius=radius)
+            return out
+    except Exception:
+        pass
+    # نسخه‌های قدیمی
     if hasattr(ft, "InputBorder"):
-        out["border"] = ft.InputBorder.OUTLINE
+        try:
+            out["border"] = ft.InputBorder.OUTLINE
+        except Exception:
+            pass
     out["border_radius"] = radius
     return out
 
@@ -195,19 +312,7 @@ def hours_to_hm(hours):
     if m == 60: h += 1; m = 0
     return f"{h}:{m:02d}"
 
-def g2j(gy, gm, gd):
-    g_d_m = [0,31,59,90,120,151,181,212,243,273,304,334]
-    if gy > 1600: jy = 979; gy -= 1600
-    else: jy = 0; gy -= 621
-    gy2 = gy + 1 if gm > 2 else gy
-    days = 365*gy + (gy2+3)//4 - (gy2+99)//100 + (gy2+399)//400 - 80 + gd + g_d_m[gm-1]
-    jy += 33*(days//12053); days %= 12053
-    jy += 4*(days//1461); days %= 1461
-    if days > 365:
-        jy += (days-1)//365; days = (days-1) % 365
-    if days < 186: jm = 1 + days//31; jd = 1 + days%31
-    else: jm = 7 + (days-186)//30; jd = 1 + (days-186)%30
-    return jy, jm, jd
+
 
 def today_jalali():
     n = datetime.now()
@@ -240,9 +345,29 @@ def validate_jalali(s):
     return True, ""
 
 def get_data_dir():
-    cands = [os.environ.get("FLET_APP_STORAGE_DATA"),
-             os.path.join(os.path.expanduser("~"), ".erfanhesab"),
-             os.path.join(tempfile.gettempdir(), "erfanhesab")]
+    # اندروید: از مسیر مخصوص Flet استفاده کن
+    if _is_android():
+        p = os.environ.get("FLET_APP_STORAGE_DATA")
+        if p:
+            try:
+                os.makedirs(p, exist_ok=True)
+                return p
+            except Exception:
+                pass
+        # fallback اندروید
+        p = "/data/data/com.flet.app/files"
+        try:
+            os.makedirs(p, exist_ok=True)
+            return p
+        except Exception:
+            pass
+
+    # دسکتاپ
+    cands = [
+        os.environ.get("FLET_APP_STORAGE_DATA"),
+        os.path.join(os.path.expanduser("~"), ".erfanhesab"),
+        os.path.join(tempfile.gettempdir(), "erfanhesab"),
+    ]
     for p in cands:
         if not p: continue
         try:
@@ -251,7 +376,8 @@ def get_data_dir():
             with open(probe, "w") as f: f.write("1")
             os.remove(probe)
             return p
-        except Exception: continue
+        except Exception:
+            continue
     return HERE
 
 def log_error(text):
@@ -270,6 +396,13 @@ def _writable(d):
     except Exception: return False
 
 def export_dir():
+    if _is_android():
+        # اندروید: پوشه‌ی اپ
+        d = os.path.join(get_data_dir(), "exports")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    # دسکتاپ
     for base in ("/storage/emulated/0/Download", "/sdcard/Download",
                  os.path.join(os.path.expanduser("~"), "Downloads")):
         if os.path.isdir(base):
@@ -1522,6 +1655,7 @@ def build_pdf(path, company, slips):
     return path
 
 def build_payroll_list_pdf(path, company, year, month, rows):
+    """لیست حقوق و دستمزد A4 افقی — چیدمان راست‌به‌چپ استاندارد ایران."""
     pdf, _ = _pdf_init((297, 210))
     W, M = 297, 6
     pdf.add_page()
@@ -1531,31 +1665,39 @@ def build_payroll_list_pdf(path, company, year, month, rows):
     pdf.set_xy(M, 20); pdf.set_font("F", size=9); pdf.set_text_color(0, 0, 0)
     pdf.cell(W - 2*M, 6, rtl(f"شرکت: {company.get('name','')}"), border=0, align='R')
     y = 28
+
+    # 🆕 چیدمان ستون‌ها از راست به چپ (ایندکس ۰ = سمت راست)
     headers = ["#", "نام", "پایه", "اضافه", "شب", "نوبت", "جمعه", "مزایا",
                "ناخالص", "بیمه", "مالیات", "وام", "کسر", "خالص"]
-    col_w = [(W - 2*M) / len(headers)] * len(headers)
+    headers_rtl = list(reversed(headers))
+    col_w = [(W - 2*M) / len(headers_rtl)] * len(headers_rtl)
+
     pdf.set_fill_color(240, 180, 41); pdf.set_text_color(30, 58, 95); pdf.set_font("F", size=8)
     x = M
-    for i, h in enumerate(headers):
+    for i, h in enumerate(headers_rtl):
         pdf.set_xy(x, y); pdf.cell(col_w[i], 6, rtl(h), border=1, align='C', fill=True)
         x += col_w[i]
     y += 6
+
     pdf.set_text_color(0, 0, 0); pdf.set_font("F", size=7)
     total_gross = total_net = 0
     for idx, r in enumerate(rows, 1):
-        if y > 190: pdf.add_page(); y = 20
+        if y > 190:
+            pdf.add_page(); y = 20
         vals = [str(idx), f"{r['first_name']} {r['last_name']}",
                 fmt(r['base_salary_monthly']), fmt(r.get('overtime_amount', 0)),
                 fmt(r.get('night_amount', 0)), fmt(r.get('shift_amount', 0)),
                 fmt(r.get('friday_amount', 0)), fmt(r.get('benefits_sum', 0)),
                 fmt(r['gross_salary']), fmt(r['insurance_emp']), fmt(r['tax']),
                 fmt(r['loan_install']), fmt(r['absent_ded']), fmt(r['net_salary'])]
+        vals_rtl = list(reversed(vals))          # 🆕
         x = M
-        for i, v in enumerate(vals):
+        for i, v in enumerate(vals_rtl):
             pdf.set_xy(x, y); pdf.cell(col_w[i], 5.5, rtl(v), border=1, align='C')
             x += col_w[i]
         y += 5.5
         total_gross += r['gross_salary']; total_net += r['net_salary']
+
     pdf.set_fill_color(240, 180, 41); pdf.set_text_color(30, 58, 95); pdf.set_font("F", size=8)
     pdf.set_xy(M, y)
     pdf.cell(W - 2*M, 7, rtl(f"جمع کل: ناخالص {fmt(total_gross)} — خالص {fmt(total_net)}"),
@@ -2146,14 +2288,14 @@ class Contract:
             pdf.set_line_width(0.3)
             pdf.rect(self.MARGIN + 2, y, self._cw_in, row_h, 'D')
 
-            # خطوط عمودی
+            # خطوط عمودی جداکننده (مستقل از RTL)
             for j in range(1, ncols):
                 x = self.MARGIN + 2 + j * col_w
                 pdf.set_draw_color(200, 210, 222)
                 pdf.set_line_width(0.18)
                 pdf.line(x, y + 1.5, x, y + row_h - 1.5)
 
-            # سلول‌ها
+            # 🆕 سلول‌ها: ایندکس ۰ در سمت راست رسم می‌شود (RTL)
             for j in range(ncols):
                 cell = row[j] if j < len(row) else ''
                 is_label = (ncols == 4 and j % 2 == 0) or (ncols == 2 and j == 0)
@@ -2161,7 +2303,8 @@ class Contract:
                     self._sf(8.3, (60, 95, 140))
                 else:
                     self._sf(8.7, (20, 30, 45))
-                pdf.set_xy(self.MARGIN + 2 + j * col_w + 2, y + 1.8)
+                col_index = ncols - 1 - j          # 🆕 معکوس‌سازی موقعیت افقی
+                pdf.set_xy(self.MARGIN + 2 + col_index * col_w + 2, y + 1.8)
                 pdf.cell(col_w - 4, row_h - 3, rtl(cell), border=0, align='C')
 
             y += row_h
@@ -2669,7 +2812,12 @@ def dd(label, options, value=None, on_select=None, width=None, expand=False,
     return K(ft.Dropdown, **args)
 
 def _button(cls_name, text, icon, on_click, bg, fg, expand, height, width=None):
-    cls = getattr(ft, cls_name, None) or getattr(ft, "Button", None) or ft.ElevatedButton
+    cls = (getattr(ft, cls_name, None)
+           or getattr(ft, "Button", None)
+           or getattr(ft, "ElevatedButton", None)
+           or getattr(ft, "TextButton", None))
+    if cls is None:
+        raise RuntimeError("هیچ کلاس دکمه‌ای در نسخه Flet پیدا نشد.")
     ps = _params(cls)
     style_kw = {}
     if fg: style_kw['color'] = fg
@@ -2717,6 +2865,10 @@ class App:
         self._defer = False
         self._queue = []
         self._kb_height = 0   # 🆕 نگهداری ارتفاع کیبورد
+                # ساعت زنده
+        self._clock_text = None
+        self._clock_timer = None
+        self._clock_stop = False
 
     def start(self):
         p = self.page
@@ -2744,6 +2896,56 @@ class App:
         self.page.theme_mode = ft.ThemeMode.DARK if STATE['dark'] else ft.ThemeMode.LIGHT
         self.page.bgcolor = T()['bg']
         if self.body is not None: self.body.bgcolor = T()['bg']
+
+    def _clock_string(self):
+        """رشته‌ی تاریخ و ساعت شمسی با ارقام فارسی."""
+        now = datetime.now()
+        try:
+            jy, jm, jd = g2j(now.year, now.month, now.day)
+        except Exception:
+            jy, jm, jd = now.year, now.month, now.day
+        trans = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+        date_s = f"{jy}/{jm:02d}/{jd:02d}".translate(trans)
+        time_s = f"{now.hour:02d}:{now.minute:02d}:{now.second:02d}".translate(trans)
+        return f"{date_s}   •   {time_s}"
+
+    def _tick_clock(self):
+        """هر ثانیه متن ساعت را به‌روز می‌کند و خودش را دوباره زمان‌بندی می‌کند."""
+        try:
+            if self._clock_text is not None:
+                self._clock_text.value = self._clock_string()
+                self._clock_text.update()
+        except Exception:
+            pass
+        if not self._clock_stop:
+            try:
+                self._clock_timer = threading.Timer(1.0, self._tick_clock)
+                self._clock_timer.daemon = True
+                self._clock_timer.start()
+            except Exception:
+                pass
+
+    def _build_clock_widget(self):
+        """ویجت ساعت زنده برای قرار دادن در AppBar."""
+        self._clock_text = ft.Text(
+            self._clock_string(),
+            size=12,
+            weight=ft.FontWeight.BOLD,
+            color=T()['accent'],
+            no_wrap=True,
+        )
+        return ft.Container(
+            content=ft.Row([
+                ft.Icon(_ic('SCHEDULE', 'ACCESS_TIME'), size=14, color=T()['accent']),
+                self._clock_text,
+            ], spacing=5, tight=True,
+               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=pad_sym(10, 4),
+            border_radius=10,
+            bgcolor=alpha(T()['accent'], 0x1A),
+            border=border_all(1, alpha(T()['accent'], 0x44)),
+            margin=pad_only(right=8),
+        )    
     def on_media_change(self, e=None):
         """هر بار ابعاد صفحه تغییر می‌کند (باز/بسته شدن کیبورد)، دوباره رندر می‌کنیم."""
         try:
@@ -2871,13 +3073,30 @@ class App:
         p = self.page
         self.apply_theme()
         self.body = ft.Container(expand=True, bgcolor=T()["bg"], padding=pad_sym(8, 6))
+        # 🆕 ساعت زنده — قبل از ساخت AppBar بساز
+        self._clock_stop = False
+        clock_widget = self._build_clock_widget()
+
         self.appbar = K(ft.AppBar,
                         title=ft.Text(APP_TITLE, color=T()['accent'],
                                     weight=ft.FontWeight.BOLD, size=15),
                         center_title=True, bgcolor=T()['primary'], toolbar_height=52,
-                        actions=[iconbtn(_ic("PALETTE"), self.theme_picker, T()['accent'], 20, "تغییر تم"),
-                                iconbtn(_ic("DARK_MODE", "BRIGHTNESS_6"), self.toggle_theme,
-                                        T()['accent'], 20, "شب/روز")])
+                        actions=[
+                            clock_widget,
+                            iconbtn(_ic("PALETTE"), self.theme_picker, T()['accent'], 20, "تغییر تم"),
+                            iconbtn(_ic("DARK_MODE", "BRIGHTNESS_6"), self.toggle_theme,
+                                    T()['accent'], 20, "شب/روز"),
+                        ])
+
+        # 🆕 شروع حلقه‌ی به‌روزرسانی ساعت
+        if self._clock_timer is not None:
+            try:
+                self._clock_timer.cancel()
+            except Exception:
+                pass
+        self._clock_timer = threading.Timer(1.0, self._tick_clock)
+        self._clock_timer.daemon = True
+        self._clock_timer.start()      
         self.navbar = K(ft.NavigationBar, selected_index=0,
                         on_change=lambda e: self.go_root(int(e.control.selected_index)),
                         bgcolor=T()['card'],
@@ -3086,7 +3305,387 @@ class App:
                                                 width=w, height=h),
                            actions=actions)
         self.open_dlg(d)
+   
+    def open_jalali_date_picker(self, initial='', on_pick=None,
+                                title='انتخاب تاریخ'):
+        """انتخابگر تاریخ شمسی — طراحی ثابت برای همهٔ گوشی‌ها."""
+        import time as _time
 
+        # ─── قفل ضدِ باز/بسته شدن مکرر ───
+        now = _time.time()
+        last = getattr(self, '_date_picker_last', 0)
+        if now - last < 0.6:
+            return
+        if getattr(self, '_date_picker_open', False):
+            return
+        self._date_picker_open = True
+        self._date_picker_last = now
+
+        # ─── تاریخ اولیه ───
+        today = today_jalali()
+        cy, cm, cd = today
+        if initial:
+            ok, _ = validate_jalali(initial)
+            if ok:
+                p = norm(initial).replace('-', '/').split('/')
+                try:
+                    cy, cm, cd = int(p[0]), int(p[1]), int(p[2])
+                except (ValueError, IndexError):
+                    pass
+
+        state = {'y': cy, 'm': cm, 'd': cd}
+        dlg_ref = {'dlg': None}
+
+        # ─── ابعاد ثابت ───
+        CELL = 40
+        GAP = 3
+        GRID_W = 7 * CELL + 6 * GAP       # 298
+        CONTENT_W = GRID_W + 24           # 322
+
+        # ─── انتخاب سال و ماه (کشویی) ───
+        year_opts = [(str(y), str(y)) for y in range(1380, 1421)]
+        month_opts = [(str(i), MONTHS[i - 1]) for i in range(1, 13)]
+
+        def _dd_border(radius=8):
+            try:
+                if hasattr(ft, 'OutlineInputBorder'):
+                    return ft.OutlineInputBorder(border_radius=radius)
+            except Exception:
+                pass
+            return None
+
+        _border = _dd_border(8)
+
+        year_dd = ft.Dropdown(
+            label='سال', value=str(cy),
+            options=[ft.dropdown.Option(k, t) for k, t in year_opts],
+            width=110, text_size=13,
+            content_padding=pad_sym(8, 8), dense=True,
+            enable_filter=True, enable_search=True, editable=True,
+            **({'border': _border} if _border is not None else {}),
+        )
+        month_dd = ft.Dropdown(
+            label='ماه', value=str(cm),
+            options=[ft.dropdown.Option(k, t) for k, t in month_opts],
+            expand=True, text_size=13,
+            content_padding=pad_sym(8, 8), dense=True,
+            **({'border': _border} if _border is not None else {}),
+        )
+
+        # ─── گرید روزها ───
+        grid_holder = ft.Column(spacing=GAP, tight=True,
+                                horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+        preview = ft.Text('', size=13, weight=ft.FontWeight.BOLD,
+                          color=T()['primary'], text_align=ft.TextAlign.CENTER)
+        start_info = ft.Text('', size=10, color=T()['muted'],
+                             text_align=ft.TextAlign.CENTER)
+        # ═══ بستن امن ═══
+        def close_picker():
+            self._date_picker_open = False
+            self._date_picker_last = _time.time()
+            d = dlg_ref.get('dlg')
+            if d is not None:
+                try:
+                    self.close_dlg(d)
+                except Exception:
+                    pass
+
+        def rebuild():
+            # خواندن مقدار کشویی‌ها
+            try:
+                if year_dd.value: state['y'] = int(year_dd.value)
+                if month_dd.value: state['m'] = int(month_dd.value)
+            except (ValueError, TypeError):
+                pass
+
+            maxd = days_in_month(state['y'], state['m'])
+            if state['d'] > maxd:
+                state['d'] = maxd
+
+            grid_holder.controls.clear()
+
+            # ─── نام کوتاه و کامل روزها (شنبه=۰ ... جمعه=۶) ───
+            DOW_SHORT = ['ش', 'ی', 'د', 'س', 'چ', 'پ', 'ج']
+            DOW_FULL = ['شنبه', 'یک‌شنبه', 'دوشنبه', 'سه‌شنبه',
+                        'چهارشنبه', 'پنج‌شنبه', 'جمعه']
+
+            # رنگ هر ستون براساس روز هفته
+            # ۰=شنبه ... ۵=پنج‌شنبه, ۶=جمعه
+            def dow_color(i):
+                if i == 6:      # جمعه
+                    return T()['danger']
+                if i == 5:      # پنج‌شنبه
+                    return T()['info']
+                return T()['muted']
+
+            # ═══════ سرصفحه: نام حروف روزها (راست=شنبه، چپ=جمعه) ═══════
+            header_cells = []
+            for i, s in enumerate(DOW_SHORT):
+                header_cells.append(ft.Container(
+                    content=ft.Text(
+                        s, size=12, weight=ft.FontWeight.BOLD,
+                        color=dow_color(i),
+                        text_align=ft.TextAlign.CENTER),
+                    width=CELL, height=26, alignment=center(),
+                    tooltip=DOW_FULL[i]))
+            grid_holder.controls.append(ft.Container(
+                content=ft.Row(header_cells, spacing=GAP,
+                               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                width=GRID_W,
+                padding=pad_sym(0, 2)))
+
+            # ═══════ روزهای ماه ═══════
+            # jalali_weekday: ۰=شنبه ... ۶=جمعه
+            # پس ستون j اُم نمایش = روز هفته j
+            first_wd = jalali_weekday(state['y'], state['m'], 1)
+            cells = [None] * first_wd + list(range(1, maxd + 1))
+            while len(cells) % 7 != 0:
+                cells.append(None)
+
+            for row_idx in range(0, len(cells), 7):
+                row_cells = []
+                for col_idx in range(7):  # ۰=شنبه ... ۶=جمعه
+                    d = cells[row_idx + col_idx]
+                    if d is None:
+                        row_cells.append(
+                            ft.Container(width=CELL, height=CELL))
+                        continue
+
+                    is_sel = (d == state['d'])
+                    is_today = (state['y'] == today[0]
+                                and state['m'] == today[1]
+                                and d == today[2])
+                    is_friday = (col_idx == 6)
+
+                    if is_sel:
+                        bg = T()['primary']
+                        fg = '#ffffff'
+                        bd = T()['primary']
+                        bw = 2
+                    elif is_today:
+                        bg = alpha(T()['accent'], 0x45)
+                        fg = T()['primary']
+                        bd = T()['accent']
+                        bw = 2
+                    elif is_friday:
+                        bg = alpha(T()['danger'], 0x10)
+                        fg = T()['danger']
+                        bd = alpha(T()['danger'], 0x33)
+                        bw = 1
+                    else:
+                        bg = T()['card']
+                        fg = T()['text']
+                        bd = alpha(T()['primary'], 0x22)
+                        bw = 1
+
+                    def mk_click(day):
+                        def h(ev):
+                            state['d'] = day
+                            rebuild()
+                        return h
+
+                    row_cells.append(ft.Container(
+                        content=ft.Text(
+                            str(d), size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color=fg,
+                            text_align=ft.TextAlign.CENTER),
+                        width=CELL, height=CELL,
+                        bgcolor=bg, border_radius=8,
+                        alignment=center(), ink=True,
+                        border=border_all(bw, bd),
+                        on_click=mk_click(d)))
+
+                grid_holder.controls.append(ft.Container(
+                    content=ft.Row(row_cells, spacing=GAP,
+                                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    width=GRID_W))
+
+            # ═══════ پیش‌نمایش با نام کامل روز ═══════
+            try:
+                wd_idx = jalali_weekday(state['y'], state['m'], state['d'])
+                wd_name = DOW_FULL[wd_idx]
+                today_mark = ''
+                if (state['y'] == today[0] and state['m'] == today[1]
+                        and state['d'] == today[2]):
+                    today_mark = '  (امروز)'
+                preview.value = (f"{wd_name}   {state['y']}/{state['m']:02d}/"
+                                 f"{state['d']:02d}{today_mark}")
+            except Exception:
+                preview.value = (f"{state['y']}/{state['m']:02d}/"
+                                 f"{state['d']:02d}")
+            try:
+                fw_idx = jalali_weekday(state['y'], state['m'], 1)
+                fw_name = DOW_FULL[fw_idx]
+                start_info.value = (f"شروع ماه: {fw_name} "
+                                    f"(ستون «{DOW_SHORT[fw_idx]}» از راست)")
+            except Exception:
+                start_info.value = ''
+            try:
+                start_info.update()
+            except Exception:
+                pass
+            try:
+                grid_holder.update()
+                preview.update()
+            except Exception:
+                pass
+
+        def _sync_dd_values():
+            """هم‌گام‌سازی مقدار کشویی‌ها با state."""
+            try:
+                yv = str(state['y'])
+                mv = str(state['m'])
+                if year_dd.value != yv:
+                    year_dd.value = yv
+                    try: year_dd.update()
+                    except Exception: pass
+                if month_dd.value != mv:
+                    month_dd.value = mv
+                    try: month_dd.update()
+                    except Exception: pass
+            except Exception:
+                pass
+
+        def on_year_change(e):
+            # سال عوض شد → روز را در محدوده نگه دار و همه‌چیز را بازسازی کن
+            try:
+                if year_dd.value:
+                    state['y'] = int(year_dd.value)
+            except (ValueError, TypeError):
+                pass
+            maxd = days_in_month(state['y'], state['m'])
+            if state['d'] > maxd:
+                state['d'] = maxd
+            _sync_dd_values()
+            rebuild()
+
+        def on_month_change(e):
+            try:
+                if month_dd.value:
+                    state['m'] = int(month_dd.value)
+            except (ValueError, TypeError):
+                pass
+            maxd = days_in_month(state['y'], state['m'])
+            if state['d'] > maxd:
+                state['d'] = maxd
+            _sync_dd_values()
+            rebuild()
+
+        # اتصال مقاوم: هم on_change (Flet 0.28) هم on_select (Flet 1.0)
+        def _bind_dd(dd_ctrl, handler):
+            for attr in ('on_select', 'on_change'):
+                try:
+                    if hasattr(dd_ctrl, attr):
+                        setattr(dd_ctrl, attr, handler)
+                except Exception:
+                    pass
+
+        _bind_dd(year_dd, on_year_change)
+        _bind_dd(month_dd, on_month_change)
+
+        # ═══ دکمه‌ها ═══
+        def do_confirm(e):
+            v = f"{state['y']}/{state['m']:02d}/{state['d']:02d}"
+            close_picker()
+            if on_pick:
+                try:
+                    on_pick(v)
+                except Exception:
+                    log_error(traceback.format_exc())
+
+        def do_clear(e):
+            close_picker()
+            if on_pick:
+                try:
+                    on_pick('')
+                except Exception:
+                    log_error(traceback.format_exc())
+
+        def do_today(e):
+            y, m, d = today
+            state['y'], state['m'], state['d'] = y, m, d
+            year_dd.value = str(y)
+            month_dd.value = str(m)
+            try:
+                year_dd.update()
+                month_dd.update()
+            except Exception:
+                pass
+            rebuild()
+
+        confirm_btn = _button("ElevatedButton", 'تأیید', _ic('CHECK'),
+                              do_confirm, T()['success'], '#ffffff',
+                              True, 46)
+        today_btn = _button("OutlinedButton", 'امروز', _ic('TODAY'),
+                            do_today, None, T()['primary'],
+                            False, 46, 80)
+        cancel_btn = _button("TextButton", 'انصراف', _ic('CLOSE'),
+                             lambda e: close_picker(), None, T()['muted'],
+                             False, 46, 80)
+
+        # ═══ ساخت محتوای دیالوگ (عرض ثابت) ═══
+        content = ft.Container(
+            content=ft.Column([
+                ft.Row([year_dd, month_dd], spacing=6,
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Container(
+                    content=ft.Text('شنبه تا جمعه — RTL',
+                                    size=10, color=T()['muted'],
+                                    text_align=ft.TextAlign.CENTER),
+                    alignment=center()),
+                ft.Divider(height=1, color=alpha(T()['primary'], 0x20)),
+                grid_holder,
+                # ⬇⬇⬇ این سه خط جدید را اضافه کن ⬇⬇⬇
+                ft.Container(content=start_info, alignment=center()),
+                # ⬆⬆⬆ پایان خطوط جدید ⬆⬆⬆
+                ft.Container(height=2),
+                ft.Container(
+                    content=preview,
+                    bgcolor=alpha(T()['primary'], 0x10),
+                    padding=pad_sym(8, 6),
+                    border_radius=8,
+                    alignment=center(),
+                    width=GRID_W,
+                ),
+                ft.Container(height=2),
+                ft.Row([confirm_btn, today_btn, cancel_btn],
+                       spacing=4),
+            ], spacing=8, tight=True,
+               horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            width=CONTENT_W,
+            padding=pad_sym(0, 4),
+        )
+
+        # ═══ دیالوگ ═══
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Icon(_ic('CALENDAR_MONTH'), size=18, color=T()['primary']),
+                ft.Text(title, size=14, weight=ft.FontWeight.BOLD,
+                        color=T()['primary'], expand=True),
+                ft.IconButton(_ic('CLOSE'), icon_size=18,
+                              icon_color=T()['muted'],
+                              tooltip='بستن',
+                              on_click=lambda e: close_picker()),
+            ], spacing=6,
+               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            content=content,
+            actions=[],
+            content_padding=pad_sym(16, 8),
+            title_padding=pad_sym(16, 12),
+        )
+
+        # اگر نسخه‌ای این را پشتیبانی کرد، حاشیهٔ امن اطراف دیالوگ را تنظیم می‌کند
+        try:
+            dlg.inset_padding = pad_sym(20, 40)
+        except Exception:
+            pass
+
+        dlg_ref['dlg'] = dlg
+
+        rebuild()
+        self.open_dlg(dlg)
     def period_bar(self, on_change, with_month=True):
         def yc(e):
             y = parse_int(e.control.value)
@@ -3097,9 +3696,8 @@ class App:
         row = [tf("سال", self.year, kb=True, width=90, on_change=yc, size=12)]
         if with_month:
             row.append(dd("ماه", [(i + 1, m) for i, m in enumerate(MONTHS)],
-                          self.month, mc, expand=True))
+                        self.month, mc, expand=True))
         return ft.Row(row, spacing=6)
-
     def empty(self, msg, icon=None):
         return ft.Container(
             ft.Column([ft.Icon(icon or _ic("INBOX"), size=44, color=T()['muted']),
@@ -3216,54 +3814,410 @@ class App:
         ]
 
     def emp_form(self, emp):
+        """فرم تمام‌صفحه پرسنل با بخش‌های بازشو (آکاردئون) و انتخابگر تاریخ شمسی."""
         depts = self.db.q("SELECT * FROM departments WHERE company_id=?", (self.cid,))
-        init = dict(emp) if emp else dict(
-            is_active=1, marital=0, child_count=0,
-            employment_date=jalali_today_str(), contract_type='رسمی',
-            dept_id=depts[0]['id'] if depts else None,
-            insurance_exempt=0, tax_exempt=0, shift_pattern='none')
-        init['base_hours'] = (emp or {}).get('base_hours') or 0
-        if not emp:
-            yr = self.db.q1('SELECT * FROM rate_years WHERE company_id=? AND year<=? ORDER BY year DESC LIMIT 1', (self.cid, self.year))
-            init['daily_salary'] = (yr or {}).get('min_daily_wage') or STD['min_daily_wage']
 
-        def save(v):
-            v['national_code'] = norm(v.get('national_code') or '')
-            if v['national_code'] and not (v['national_code'].isdigit() and len(v['national_code']) == 10):
-                return 'اگر کد ملی وارد می‌شود باید ۱۰ رقم عددی باشد.'
-            if not v['national_code']:
-                v['national_code'] = None
-            if not v.get('personnel_code'):
-                existing = self.db.q('SELECT personnel_code FROM employees WHERE company_id=?', (self.cid,))
-                nums = [parse_int(x.get('personnel_code')) for x in existing if norm(x.get('personnel_code') or '').isdigit()]
-                v['personnel_code'] = f"{max(nums or [1000]) + 1:04d}"
-            if (v['daily_salary'] or 0) <= 0:
-                return "حقوق روزانه معتبر نیست"
-            for key, lbl in (('employment_date', 'تاریخ استخدام'),
-                             ('birth_date', 'تاریخ تولد'), ('contract_end', 'پایان قرارداد')):
-                d = norm(v.get(key) or '')
+        # ═══════════ مقدار اولیه ═══════════
+        if emp:
+            init = dict(emp)
+        else:
+            init = dict(
+                is_active=1, marital=0, child_count=0,
+                employment_date=jalali_today_str(), contract_type='رسمی',
+                dept_id=depts[0]['id'] if depts else None,
+                insurance_exempt=0, tax_exempt=0, shift_pattern='none',
+                base_hours=0,
+            )
+            yr = self.db.q1(
+                'SELECT * FROM rate_years WHERE company_id=? AND year<=? '
+                'ORDER BY year DESC LIMIT 1', (self.cid, self.year))
+            init['daily_salary'] = ((yr or {}).get('min_daily_wage')
+                                    or STD['min_daily_wage'])
+        init['base_hours'] = (emp or {}).get('base_hours') or 0
+
+        ctrls = {}
+
+        # ─────── سازندهٔ کنترل‌ها ───────
+        def _set_ctrl_value(ctrl, val):
+            ctrl.value = val
+            try: ctrl.update()
+            except Exception: pass
+
+        def add_text(key, label, **kw):
+            c = tf(label, init.get(key), expand=True, **kw)
+            ctrls[key] = c
+
+        def add_money(key, label):
+            v = init.get(key)
+            shown = fmt(v) if v not in (None, '', 0) else ''
+            ctrls[key] = tf(label, shown, kb=True, money=True, expand=True)
+
+        def add_int(key, label):
+            v = init.get(key)
+            ctrls[key] = tf(label, v if v not in (None, '') else '',
+                            kb=True, expand=True)
+
+        def add_dd(key, label, options):
+            ctrls[key] = dd(label, options, init.get(key), expand=True)
+
+        def add_switch(key, label):
+            ctrls[key] = K(ft.Switch, label=label,
+                        value=bool(init.get(key)),
+                        active_color=T()['accent'])
+
+        def add_multiline(key, label):
+            c = tf(label, init.get(key), multiline=True, expand=True)
+            try:
+                c.min_lines = 2; c.max_lines = 4
+            except Exception: pass
+            ctrls[key] = c
+
+        def add_date(key, label):
+            field = tf(label, init.get(key), expand=True, read_only=True,
+                       prefix=_ic('CALENDAR_MONTH'))
+            try:
+                field.read_only = True
+            except Exception:
+                pass
+
+            def open_picker(e=None):
+                if getattr(self, '_date_picker_open', False):
+                    return
+                def _on_pick(v):
+                    field.value = v or ''
+                    try:
+                        field.update()
+                    except Exception:
+                        pass
+                self.open_jalali_date_picker(
+                    field.value or '',
+                    on_pick=_on_pick,
+                    title=label)
+
+            try:
+                field.on_click = open_picker
+            except Exception:
+                pass
+
+            # ⚠️ هیچ on_focus‌ای اینجا نگذار
+
+            ctrls[key] = field
+
+        # ─────── تعریف فیلدها ───────
+        add_text('first_name', 'نام *')
+        add_text('last_name', 'نام خانوادگی *')
+        add_text('father_name', 'نام پدر')
+        add_text('national_code', 'کد ملی', kb=True)
+        add_text('id_number', 'شماره شناسنامه', kb=True)
+        add_text('id_issue_place', 'محل صدور')
+        add_date('birth_date', 'تاریخ تولد')
+        add_text('birth_place', 'محل تولد')
+
+        add_text('personnel_code', 'کد پرسنلی', kb=True)
+        add_date('employment_date', 'تاریخ استخدام')
+        add_dd('contract_type', 'نوع قرارداد',
+            [('رسمی', 'رسمی'), ('آزمایشی', 'آزمایشی'),
+                ('پیمانکاری', 'پیمانکاری'), ('موقت', 'موقت'),
+                ('ساعتی', 'ساعتی')])
+        add_date('contract_end', 'پایان قرارداد')
+        add_dd('dept_id', 'دپارتمان',
+            [(d['id'], d['title']) for d in depts])
+        add_text('job_title', 'عنوان شغلی')
+        add_dd('education', 'مدرک تحصیلی',
+            [('', '—'), ('زیر دیپلم', 'زیر دیپلم'), ('دیپلم', 'دیپلم'),
+                ('کاردانی', 'کاردانی'), ('کارشناسی', 'کارشناسی'),
+                ('کارشناسی ارشد', 'کارشناسی ارشد'), ('دکترا', 'دکترا')])
+        add_dd('shift_pattern', 'الگوی نوبت‌کاری',
+            [('none', 'غیرنوبت‌کار'),
+                ('morning_evening', 'صبح و عصر، ۱۰٪'),
+                ('morning_evening_night', 'صبح/عصر/شب، ۱۵٪'),
+                ('morning_night', 'صبح و شب، ۲۲٫۵٪'),
+                ('evening_night', 'عصر و شب، ۲۲٫۵٪')])
+
+        add_money('daily_salary', 'حقوق روزانه (ریال) *')
+        add_dd('base_hours', 'ساعت ماهانه',
+            [(0, 'پیش‌فرض (220)'), (176, '176'), (192, '192'),
+                (205, '205'), (220, '220'), (240, '240')])
+        add_text('insurance_number', 'شماره بیمه', kb=True)
+        add_text('tax_file_code', 'کد پرونده مالیاتی', kb=True)
+        add_switch('insurance_exempt', 'عدم شمول بیمه (با مجوز قانونی)')
+        add_switch('tax_exempt', 'عدم شمول مالیات (با مجوز قانونی)')
+
+        add_switch('marital', 'متاهل')
+        add_int('child_count', 'تعداد فرزند')
+
+        add_text('mobile', 'تلفن همراه', kb=True)
+        add_text('phone', 'تلفن ثابت', kb=True)
+        add_text('postal_code', 'کد پستی', kb=True)
+        add_text('emergency_name', 'نام تماس اضطراری')
+        add_text('emergency_phone', 'تلفن اضطراری', kb=True)
+        add_multiline('address', 'آدرس محل سکونت')
+
+        add_text('card_number', 'شماره کارت', kb=True)
+        add_text('account_number', 'شماره حساب', kb=True)
+        add_text('iban', 'شبا (IR...)')
+        add_text('bank_name', 'نام بانک')
+
+        add_multiline('notes', 'یادداشت')
+        add_switch('is_active', 'فعال')
+
+        # ═══════════ جمع‌آوری مقادیر ═══════════
+        TEXT_KEYS = ['personnel_code', 'first_name', 'last_name', 'national_code',
+                    'father_name', 'id_number', 'id_issue_place', 'birth_date',
+                    'birth_place', 'employment_date', 'contract_end', 'job_title',
+                    'insurance_number', 'mobile', 'phone', 'address', 'postal_code',
+                    'emergency_name', 'emergency_phone', 'card_number',
+                    'account_number', 'iban', 'bank_name', 'tax_file_code', 'notes']
+        INT_KEYS = ['daily_salary', 'child_count']
+        BOOL_KEYS = ['marital', 'is_active', 'insurance_exempt', 'tax_exempt']
+        DD_KEYS = ['contract_type', 'education', 'shift_pattern']
+        DATE_KEYS = ['employment_date', 'birth_date', 'contract_end']
+
+        def collect():
+            out = {}
+            for k in TEXT_KEYS:
+                if k in ctrls:
+                    out[k] = (ctrls[k].value or '').strip()
+            for k in INT_KEYS:
+                if k in ctrls:
+                    out[k] = parse_int(ctrls[k].value)
+            for k in BOOL_KEYS:
+                if k in ctrls:
+                    out[k] = 1 if ctrls[k].value else 0
+            for k in DD_KEYS:
+                if k in ctrls:
+                    out[k] = ctrls[k].value or ''
+            if 'dept_id' in ctrls:
+                v = ctrls['dept_id'].value
+                try:
+                    out['dept_id'] = int(v) if v not in (None, '') else None
+                except (ValueError, TypeError):
+                    out['dept_id'] = None
+            if 'base_hours' in ctrls:
+                v = ctrls['base_hours'].value
+                try:
+                    n = int(v) if v not in (None, '') else 0
+                    out['base_hours'] = n if n > 0 else None
+                except (ValueError, TypeError):
+                    out['base_hours'] = None
+            return out
+
+        # ═══════════ ذخیره ═══════════
+        def do_save(e=None):
+            v = collect()
+            if not v.get('first_name'):
+                self.toast('نام الزامی است', True); return
+            if not v.get('last_name'):
+                self.toast('نام خانوادگی الزامی است', True); return
+            if (v.get('daily_salary') or 0) <= 0:
+                self.toast('حقوق روزانه معتبر نیست', True); return
+            nc = norm(v.get('national_code') or '')
+            if nc and not (nc.isdigit() and len(nc) == 10):
+                self.toast('کد ملی باید ۱۰ رقم عددی باشد', True); return
+            v['national_code'] = nc or None
+            for k in DATE_KEYS:
+                d = norm(v.get(k) or '')
                 if d:
                     ok, msg = validate_jalali(d)
-                    if not ok: return f"{lbl}: {msg}"
-                    v[key] = d.replace('-', '/')
-            v['base_hours'] = v['base_hours'] or None
-            v['iban'] = (v['iban'] or '').upper().replace(' ', '')
-            if not v.get('created_at'): v['created_at'] = jalali_today_str()
+                    if not ok:
+                        self.toast(f'تاریخ نامعتبر: {msg}', True); return
+                    v[k] = d.replace('-', '/')
+            if not v.get('personnel_code'):
+                existing = self.db.q(
+                    'SELECT personnel_code FROM employees WHERE company_id=?',
+                    (self.cid,))
+                nums = [parse_int(x.get('personnel_code')) for x in existing
+                        if norm(x.get('personnel_code') or '').isdigit()]
+                v['personnel_code'] = f"{max(nums or [1000]) + 1:04d}"
+            v['iban'] = (v.get('iban') or '').upper().replace(' ', '')
+            if not v.get('created_at'):
+                v['created_at'] = jalali_today_str()
             try:
-                if emp: self.db.update('employees', emp['id'], v)
-                else: self.db.insert('employees', dict(v, company_id=self.cid))
+                if emp:
+                    self.db.update('employees', emp['id'], v)
+                else:
+                    self.db.insert('employees', dict(v, company_id=self.cid))
             except sqlite3.IntegrityError:
-                return "این کد ملی قبلاً ثبت شده است"
-            self.toast("✅ ذخیره شد"); return None
+                self.toast('این کد ملی قبلاً ثبت شده است', True); return
+            self.toast('✅ پرسنل ذخیره شد')
+            self.back()
+            self.refresh()
 
-        def delete():
-            self.db.delete('employees', emp['id'])
-            self.toast("حذف شد"); self.refresh()
-        self.form("✏️ ویرایش پرسنل" if emp else "➕ پرسنل جدید",
-                  self.emp_spec(depts), init, save,
-                  (lambda: self.confirm("با حذف، تمام سوابق حذف می‌شوند. ادامه؟",
-                                        delete, "حذف پرسنل")) if emp else None)
+        def do_delete(e=None):
+            def go():
+                self.db.delete('employees', emp['id'])
+                self.toast('🗑 پرسنل حذف شد')
+                self.back(); self.refresh()
+            self.confirm(
+                'با حذف پرسنل، تمام سوابق مرتبط حذف می‌شوند. ادامه می‌دهید؟',
+                go, 'حذف پرسنل')
 
+        # ═══════════ سازندهٔ بخش آکاردئونی ═══════════
+        def field_cell(key):
+            c = ctrls.get(key)
+            if c is None:
+                return ft.Container(expand=True)
+            try: c.expand = True
+            except Exception: pass
+            return ft.Container(content=c, expand=True)
+
+        def make_section(title, color, rows, initially_open=True):
+            body = ft.Column(spacing=8, tight=True)
+            for row_keys in rows:
+                if len(row_keys) == 1:
+                    body.controls.append(
+                        ft.Container(content=field_cell(row_keys[0]),
+                                    padding=pad_sym(0, 2)))
+                else:
+                    body.controls.append(ft.Row(
+                        [field_cell(k) for k in row_keys], spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.START))
+            body.visible = initially_open
+
+            arrow = ft.Icon(
+                _ic('EXPAND_LESS') if initially_open else _ic('EXPAND_MORE'),
+                color=color, size=20)
+
+            def toggle(e):
+                body.visible = not body.visible
+                new_icon = _ic('EXPAND_LESS') if body.visible else _ic('EXPAND_MORE')
+                try:
+                    arrow.name = new_icon
+                except Exception:
+                    try: arrow.icon = new_icon
+                    except Exception: pass
+                try:
+                    body.update(); arrow.update()
+                except Exception:
+                    pass
+
+            header = ft.Container(
+                content=ft.Row([
+                    ft.Container(width=4, height=22, bgcolor=color,
+                                border_radius=2),
+                    txt(title, 13, True, color, expand=True),
+                    arrow,
+                ], spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=pad_sym(8, 6),
+                on_click=toggle, ink=True, border_radius=10)
+
+            return ft.Container(
+                content=ft.Column([header, body], spacing=6, tight=True),
+                padding=8,
+                bgcolor=alpha(color, 0x10),
+                border=border_all(1, alpha(color, 0x33)),
+                border_radius=14)
+
+        # ═══════════ بخش‌ها ═══════════
+        sections = [
+            make_section('🪪 اطلاعات هویتی', T()['primary'], [
+                ('first_name', 'last_name'),
+                ('father_name', 'national_code'),
+                ('id_number', 'id_issue_place'),
+                ('birth_date', 'birth_place'),
+            ], initially_open=True),
+
+            make_section('💼 اطلاعات شغلی', T()['accent'], [
+                ('personnel_code', 'employment_date'),
+                ('contract_type', 'contract_end'),
+                ('dept_id', 'job_title'),
+                ('education', 'shift_pattern'),
+            ], initially_open=True),
+
+            make_section('💰 اطلاعات مالی و بیمه', T()['success'], [
+                ('daily_salary', 'base_hours'),
+                ('insurance_number', 'tax_file_code'),
+                ('insurance_exempt',),
+                ('tax_exempt',),
+            ], initially_open=True),
+
+            make_section('👨‍👩‍👧 وضعیت خانوادگی', T()['purple'], [
+                ('marital', 'child_count'),
+            ], initially_open=True),
+
+            make_section('📞 اطلاعات تماس', T()['info'], [
+                ('mobile', 'phone'),
+                ('postal_code', 'emergency_name'),
+                ('emergency_phone',),
+                ('address',),
+            ], initially_open=False),
+
+            make_section('🏦 اطلاعات بانکی', T()['warning'], [
+                ('card_number', 'account_number'),
+                ('iban', 'bank_name'),
+            ], initially_open=False),
+
+            make_section('📝 یادداشت و وضعیت', T()['muted'], [
+                ('notes',),
+                ('is_active',),
+            ], initially_open=False),
+        ]
+
+        # ═══════════ اجزای جانبی ═══════════
+        def build_top_bar():
+            btns = [
+                gbtn('💾 ذخیره', _ic('SAVE'), do_save, T()['success'], height=42),
+                obtn('انصراف', _ic('ARROW_BACK'),
+                    lambda e: self.back(), height=42),
+            ]
+            if emp:
+                btns.append(tbtn('🗑 حذف', do_delete, '#c0392b'))
+            return ft.Container(
+                content=ft.Row(btns, spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=pad_sym(4, 8))
+
+        def build_header():
+            if not emp:
+                return ft.Container()
+            name = f"{emp.get('first_name','')} {emp.get('last_name','')}".strip()
+            initials = ((emp.get('first_name') or '?')[:1] +
+                        (emp.get('last_name') or '')[:1])
+            return ft.Container(
+                content=ft.Row([
+                    ft.Container(
+                        content=txt(initials, 16, True, '#ffffff'),
+                        width=48, height=48, bgcolor=T()['primary'],
+                        border_radius=24, alignment=center()),
+                    ft.Column([
+                        txt(name or 'بدون نام', 14, True),
+                        txt(f"کد پرسنلی: {emp.get('personnel_code') or emp.get('id')} • "
+                            f"کد ملی: {emp.get('national_code') or '-'}",
+                            10, color=T()['muted']),
+                    ], spacing=2, expand=True),
+                ], spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=12, bgcolor=T()['card'], border_radius=14,
+                border=border_all(1, T()['line']))
+
+        hint_bar = ft.Container(
+            content=ft.Row([
+                ft.Icon(_ic('INFO_OUTLINE'), size=16, color=T()['primary']),
+                txt('فیلدهای ستاره‌دار الزامی‌اند. تاریخ‌ها را با کلیک روی '
+                    'فیلد از تقویم شمسی انتخاب کنید.',
+                    10, color=T()['muted'], expand=True),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=pad_sym(10, 6),
+            bgcolor=alpha(T()['primary'], 0x10), border_radius=10)
+
+        def build():
+            self.set_fab(_ic('SAVE'), do_save)
+            content = ft.Column([
+                build_header(),
+                hint_bar,
+                *sections,
+                ft.Container(height=100),
+            ], spacing=10, tight=True)
+            return ft.Column([
+                build_top_bar(),
+                ft.ListView([content], expand=True, spacing=0, padding=pad_sym(8, 4)),
+            ], expand=True, spacing=0)
+
+        title = (f"✏️ ویرایش پرسنل — {emp.get('first_name','')} "
+                f"{emp.get('last_name','')}".strip()
+                if emp else "➕ پرسنل جدید")
+        self.push(title, build)
     def emp_detail(self, emp):
         depts = {d['id']: d for d in self.db.q("SELECT * FROM departments WHERE company_id=?", (self.cid,))}
         dept = depts.get(emp.get('dept_id'))
@@ -5350,7 +6304,8 @@ class App:
             self.toast(f"✅ {n} نفر محاسبه شد"); self.refresh()
 
         def pdf_eid(e):
-            if not recs: self.toast("داده‌ای نیست", True); return
+            if not recs:
+                self.toast("داده‌ای نیست", True); return
             try:
                 pdf, _ = _pdf_init((210, 297))
                 W, M = 210, 8
@@ -5359,33 +6314,44 @@ class App:
                 pdf.set_xy(M, 10); pdf.set_font("F", size=13); pdf.set_text_color(240, 180, 41)
                 pdf.cell(W - 2*M, 8, rtl(f"گزارش عیدی و سنوات — سال {self.year}"), border=0, align='C')
                 y = 26
+
+                # 🆕 چیدمان ستون‌ها از راست به چپ
                 headers = ["#", "نام و فامیل", "کارکرد سال", "حقوق ماهانه", "عیدی", "سنوات"]
-                col_w = [12, 60, 25, 40, 30, 30]
+                col_w   = [12, 60, 25, 40, 30, 30]
+                headers_rtl = list(reversed(headers))
+                col_w_rtl   = list(reversed(col_w))
+
                 pdf.set_fill_color(240, 180, 41); pdf.set_text_color(30, 58, 95); pdf.set_font("F", size=9)
                 x = M
-                for i, h in enumerate(headers):
-                    pdf.set_xy(x, y); pdf.cell(col_w[i], 7, rtl(h), border=1, align='C', fill=True)
-                    x += col_w[i]
+                for i, h in enumerate(headers_rtl):
+                    pdf.set_xy(x, y); pdf.cell(col_w_rtl[i], 7, rtl(h), border=1, align='C', fill=True)
+                    x += col_w_rtl[i]
                 y += 7
+
                 pdf.set_text_color(0, 0, 0); pdf.set_font("F", size=8)
                 te = ts = 0
                 for idx, r in enumerate(recs, 1):
                     emp = emps.get(r['emp_id'])
-                    if not emp: continue
-                    if y > 275: pdf.add_page(); y = 20
+                    if not emp:
+                        continue
+                    if y > 275:
+                        pdf.add_page(); y = 20
                     vals = [str(idx), f"{emp.get('first_name','')} {emp.get('last_name','')}",
                             f"{r['work_days']:g}", fmt(r.get('monthly_salary') or 0),
                             fmt(r['amount']), fmt(r['severance'])]
+                    vals_rtl = list(reversed(vals))     # 🆕
                     x = M
-                    for i, v in enumerate(vals):
-                        pdf.set_xy(x, y); pdf.cell(col_w[i], 6, rtl(v), border=1, align='C')
-                        x += col_w[i]
+                    for i, v in enumerate(vals_rtl):
+                        pdf.set_xy(x, y); pdf.cell(col_w_rtl[i], 6, rtl(v), border=1, align='C')
+                        x += col_w_rtl[i]
                     y += 6
                     te += r['amount']; ts += r['severance']
+
                 pdf.set_fill_color(240, 180, 41); pdf.set_font("F", size=9)
                 pdf.set_text_color(30, 58, 95); pdf.set_xy(M, y)
                 pdf.cell(W - 2*M, 8, rtl(f"جمع: عیدی {fmt(te)} — سنوات {fmt(ts)}"),
-                         border=1, align='C', fill=True)
+                        border=1, align='C', fill=True)
+
                 path = os.path.join(export_dir(), f"eid_severance_{self.year}.pdf")
                 pdf.output(path)
                 self.file_dialog(path, "📄 PDF عیدی و سنوات")
@@ -5395,26 +6361,27 @@ class App:
         items = []
         for r in recs:
             e = emps.get(r['emp_id'])
-            if not e: continue
+            if not e:
+                continue
             items.append(card(ft.Column([
                 txt(f"{e.get('first_name','')} {e.get('last_name','')}", 12, True),
                 ft.Row([badge(f"🎁 عیدی {fmt(r['amount'])}", T()['success'], '#ffffff', 9),
                         badge(f"📅 سنوات {fmt(r['severance'])}", T()['primary'], '#ffffff', 9)],
-                       spacing=4, wrap=True),
+                    spacing=4, wrap=True),
                 txt(f"کارکرد سال: {r['work_days']:g} روز • حقوق ماهانه: {fmt(r.get('monthly_salary') or 0)}",
                     10, color=T()['muted'])], spacing=3), padding=10))
         total_e = sum(r['amount'] for r in recs)
         total_s = sum(r['severance'] for r in recs)
         parts = [self.period_bar(self.refresh, False),
-                 ft.Row([gbtn("🎁 محاسبه", _ic("CALCULATE"), go, T()['success'], expand=True),
-                         obtn("📄 PDF", _ic("PICTURE_AS_PDF"), pdf_eid, expand=True)], spacing=6)]
+                ft.Row([gbtn("🎁 محاسبه", _ic("CALCULATE"), go, T()['success'], expand=True),
+                        obtn("📄 PDF", _ic("PICTURE_AS_PDF"), pdf_eid, expand=True)], spacing=6)]
         if recs:
             parts.append(card(ft.Row([
                 txt(f"جمع عیدی: {fmt(total_e)}", 11, True, expand=True),
                 txt(f"جمع سنوات: {fmt(total_s)}", 11, True)]),
                 padding=10, border_color=T()['accent']))
         parts.append(ft.ListView(items or [self.empty("هنوز محاسبه نشده")], expand=True,
-                                 spacing=6, padding=pad_only(bottom=20)))
+                                spacing=6, padding=pad_only(bottom=20)))
         return ft.Column(parts, expand=True, spacing=6)
 
     def v_reports(self):
@@ -6464,16 +7431,16 @@ def build_pdf(path, company, slips):
     CW = W - 2 * M
 
     # ─── پالت رنگی کلاسیک ───
-    NAVY    = (30, 58, 95)         # نیلی کلاسیک (عنوان‌ها)
-    NAVY_L  = (60, 95, 140)        # نیلی روشن (برچسب‌ها)
-    GOLD    = (184, 134, 11)       # طلایی کلاسیک
-    GOLD_BG = (255, 248, 220)      # کرم طلایی
+    NAVY    = (30, 58, 95)
+    NAVY_L  = (60, 95, 140)
+    GOLD    = (184, 134, 11)
+    GOLD_BG = (255, 248, 220)
     WHITE   = (255, 255, 255)
     ROW_ALT = (248, 250, 253)
     ROW_HD  = (232, 240, 248)
     SOFT_BG = (244, 248, 252)
-    BORDER  = (95, 115, 140)       # ← پررنگ‌تر
-    BORDER2 = (55, 80, 110)        # خط بیرونی قوی
+    BORDER  = (95, 115, 140)
+    BORDER2 = (55, 80, 110)
     TXT     = (20, 30, 45)
     MUTED   = (90, 105, 125)
     GREEN   = (22, 110, 70)
@@ -6499,7 +7466,6 @@ def build_pdf(path, company, slips):
         pdf.cell(w, size * 0.42, rtl(str(text)), border=0, align=align)
 
     def box(x, y, w, h, fill=None, border=1, lw=0.35, bc=None):
-        """کادر با خط پررنگ‌تر پیش‌فرض ۰.۳۵."""
         if fill:
             pdf.set_fill_color(*fill)
             pdf.rect(x, y, w, h, 'F')
@@ -6527,44 +7493,59 @@ def build_pdf(path, company, slips):
 
     # ═══════════ تبدیل ساعت به «ساعت و دقیقه» ═══════════
     def hm_persian(hours):
-        """مثال: 7.55 → «۷ ساعت و ۳۳ دقیقه»"""
-        try: h = float(hours or 0)
-        except Exception: return "۰ ساعت"
-        if h <= 0: return "۰ ساعت"
+        try:
+            h = float(hours or 0)
+        except Exception:
+            return "۰ ساعت"
+        if h <= 0:
+            return "۰ ساعت"
         total_min = int(round(h * 60))
         hh = total_min // 60
         mm = total_min % 60
-        if hh and mm:  return f"{hh} ساعت و {mm} دقیقه"
-        if hh:         return f"{hh} ساعت"
+        if hh and mm:
+            return f"{hh} ساعت و {mm} دقیقه"
+        if hh:
+            return f"{hh} ساعت"
         return f"{mm} دقیقه"
 
     # ═══════════ عدد به حروف ═══════════
     def num_to_words_fa(n):
-        try: n = int(round(float(n)))
-        except Exception: return "صفر"
-        if n == 0: return "صفر"
+        try:
+            n = int(round(float(n)))
+        except Exception:
+            return "صفر"
+        if n == 0:
+            return "صفر"
         yekan = ['', 'یک', 'دو', 'سه', 'چهار', 'پنج', 'شش', 'هفت', 'هشت', 'نه']
         dahgan = ['', '', 'بیست', 'سی', 'چهل', 'پنجاه', 'شصت', 'هفتاد', 'هشتاد', 'نود']
         dah = ['ده', 'یازده', 'دوازده', 'سیزده', 'چهارده', 'پانزده',
                'شانزده', 'هفده', 'هجده', 'نوزده']
         sadgan = ['', 'صد', 'دویست', 'سیصد', 'چهارصد', 'پانصد',
                   'ششصد', 'هفتصد', 'هشتصد', 'نهصد']
+
         def three(x):
             p = []
-            if x >= 100: p.append(sadgan[x // 100]); x %= 100
-            if 10 <= x < 20: p.append(dah[x - 10])
+            if x >= 100:
+                p.append(sadgan[x // 100]); x %= 100
+            if 10 <= x < 20:
+                p.append(dah[x - 10])
             else:
                 if x >= 20:
                     p.append(dahgan[x // 10])
-                    if x % 10: p.append(yekan[x % 10])
-                elif x > 0: p.append(yekan[x])
+                    if x % 10:
+                        p.append(yekan[x % 10])
+                elif x > 0:
+                    p.append(yekan[x])
             return ' و '.join(q for q in p if q)
+
         scales = ['', ' هزار', ' میلیون', ' میلیارد', ' بیلیون']
         groups, i = [], 0
         while n > 0:
             g = n % 1000
-            if g: groups.append(three(g) + scales[i])
-            n //= 1000; i += 1
+            if g:
+                groups.append(three(g) + scales[i])
+            n //= 1000
+            i += 1
         return ' و '.join(reversed(groups)) + ' ریال'
 
     # ═══════════════════════════════════════════════════════
@@ -6578,66 +7559,48 @@ def build_pdf(path, company, slips):
 
         pdf.add_page()
 
-        # ═══════════════════════════════════════════
-        #  ⬛ قاب دور برگه (دو خطی کلاسیک)
-        # ═══════════════════════════════════════════
-        # خط بیرونی پررنگ
+        # قاب دوگانه دور برگه
         pdf.set_draw_color(*BORDER2)
         pdf.set_line_width(0.6)
         pdf.rect(6, 6, W - 12, 297 - 12, 'D')
-        # خط داخلی نازک‌تر با فاصله کم
         pdf.set_draw_color(*GOLD)
         pdf.set_line_width(0.25)
         pdf.rect(7.5, 7.5, W - 15, 297 - 15, 'D')
 
         y = M
 
-        # ═══════════════════════════════════════════
-        #  ۱) سربرگ شرکت
-        # ═══════════════════════════════════════════
+        # ═══ ۱) سربرگ شرکت ═══
         hdr_h = 17
         pdf.set_fill_color(*NAVY)
         pdf.rect(M, y, CW, hdr_h, 'F')
-
-        # لوگو گوشه راست
         _draw_logo(pdf, company.get('logo') or '', M + 3, y + 3.5, 10, 10)
-
-        # نام شرکت وسط — طلایی کلاسیک
         put(M, y + 2, CW, hdr_h - 6,
             company.get('name') or APP_TITLE,
             align='C', size=F_TITLE, color=(255, 220, 130))
-
-        # اطلاعات شرکت
         info = []
-        if company.get('phone'):   info.append(f"تلفن: {company['phone']}")
-        if company.get('address'): info.append(company['address'])
+        if company.get('phone'):
+            info.append(f"تلفن: {company['phone']}")
+        if company.get('address'):
+            info.append(company['address'])
         if info:
             put(M, y + 10, CW, 4,
                 '   •   '.join(info),
                 align='C', size=F_TINY, color=(220, 228, 240))
-
         y += hdr_h
-
-        # خط جداکننده طلایی زیر سربرگ
         pdf.set_fill_color(*GOLD)
         pdf.rect(M, y, CW, 0.8, 'F')
         y += 4.5
 
-        # ═══════════════════════════════════════════
-        #  ۲) عنوان فیش حقوقی
-        # ═══════════════════════════════════════════
+        # ═══ ۲) عنوان فیش ═══
         put(M, y, CW, 8, "فیش حقوق و دستمزد",
             align='C', size=F_TITLE - 1.5, color=NAVY)
         y += 9.5
-
         put(M, y, CW, 5,
             f"{MONTHS[int(pay['month']) - 1]}  سال  {pay['year']}",
             align='C', size=F_SUB, color=GOLD)
         y += 9
 
-        # ═══════════════════════════════════════════
-        #  ۳) مشخصات پرسنل (۳ ستون)
-        # ═══════════════════════════════════════════
+        # ═══ ۳) مشخصات پرسنل — 🆕 چیدمان RTL ═══
         col_w = CW / 3
         row_h = 8
 
@@ -6655,26 +7618,22 @@ def build_pdf(path, company, slips):
 
         for ri, row in enumerate(rows):
             x = M
-            for text in row:
+            for text in reversed(row):                # 🆕 راست‌به‌چپ
                 cell(x, y, col_w, row_h, text,
                      align='C', size=F_BODY, fill=SOFT_BG, lw=0.35)
                 x += col_w
             y += row_h
-
         y += 3.5
 
-        # ═══════════════════════════════════════════
-        #  ۴) جدول سه‌ستونه اصلی
-        # ═══════════════════════════════════════════
+        # ═══ ۴) جدول سه‌ستونه اصلی ═══
         w_work = 45
         w_ded  = 56
         w_pay  = CW - w_work - w_ded
 
-        x_work = M + w_ded + w_pay
-        x_pay  = M + w_ded
-        x_ded  = M
+        x_work = M + w_ded + w_pay   # راست‌ترین
+        x_pay  = M + w_ded           # وسط
+        x_ded  = M                   # چپ‌ترین
 
-        # ─── هدر سه‌ستونه با رنگ کلاسیک ───
         head_h = 9
         pdf.set_fill_color(*NAVY)
         pdf.rect(M, y, CW, head_h, 'F')
@@ -6683,7 +7642,6 @@ def build_pdf(path, company, slips):
         pdf.rect(M, y, CW, head_h, 'D')
         vline(x_work, y, y + head_h, color=GOLD, lw=0.5)
         vline(x_pay,  y, y + head_h, color=GOLD, lw=0.5)
-
         put(x_work, y, w_work, head_h, "اطلاعات کارکرد",
             align='C', size=F_HEAD, color=(255, 220, 130))
         put(x_pay,  y, w_pay,  head_h, "شرح پرداخت",
@@ -6692,7 +7650,6 @@ def build_pdf(path, company, slips):
             align='C', size=F_HEAD, color=(255, 220, 130))
         y += head_h
 
-        # ─── اقلام ───
         work_items = [
             ("کارکرد روزانه",   f"{pay.get('work_days') or 0:g} روز"),
             ("ساعت کارکرد",     hm_persian((pay.get('work_days') or 0) * 7.33)),
@@ -6726,26 +7683,24 @@ def build_pdf(path, company, slips):
                      and (d.get('amount') or 0) > 0
                      and not _is_loan_installment(d.get('name'))]
 
-        max_len = max(len(work_items), len(pay_items), len(ded_items), 8)
-        row_h = 7.5
-                # 🆕 افزودن اقساط وام با نمایش وضعیت
         for li in (pay.get('loan_insts') or []):
-            st_val = li.get('status') or 'pending'
             ded_items.append((f"قسط وام {li.get('installment_no','')}",
                               li.get('amount', 0)))
         if not (pay.get('loan_insts') or []) and (pay.get('loan_install') or 0) > 0:
             ded_items.append(("قسط وام", pay.get('loan_install')))
 
+        max_len = max(len(work_items), len(pay_items), len(ded_items), 8)
+        row_h = 7.5
+
         for i in range(max_len):
             bg = ROW_ALT if i % 2 == 0 else WHITE
 
-            # ═══ ستون کارکرد (راست) ═══
+            # ستون کارکرد (راست)
             pdf.set_fill_color(*bg)
             pdf.rect(x_work, y, w_work, row_h, 'F')
             pdf.set_draw_color(*BORDER)
             pdf.set_line_width(0.3)
             pdf.rect(x_work, y, w_work, row_h, 'D')
-
             if i < len(work_items):
                 lbl, val = work_items[i]
                 div_x = x_work + w_work * 0.44
@@ -6755,13 +7710,12 @@ def build_pdf(path, company, slips):
                 put(x_work + PAD_X, y, w_work * 0.44 - PAD_X, row_h,
                     val, align='C', size=F_BODY, color=BLUE)
 
-            # ═══ ستون شرح پرداخت (وسط) ═══
+            # ستون شرح پرداخت (وسط)
             pdf.set_fill_color(*bg)
             pdf.rect(x_pay, y, w_pay, row_h, 'F')
             pdf.set_draw_color(*BORDER)
             pdf.set_line_width(0.3)
             pdf.rect(x_pay, y, w_pay, row_h, 'D')
-
             if i < len(pay_items):
                 lbl, val = pay_items[i]
                 div_x = x_pay + w_pay * 0.34
@@ -6771,13 +7725,12 @@ def build_pdf(path, company, slips):
                 put(x_pay + PAD_X, y, w_pay * 0.34 - PAD_X, row_h,
                     fmt(val), align='C', size=F_BODY, color=TXT)
 
-            # ═══ ستون کسورات (چپ) ═══
+            # ستون کسورات (چپ)
             pdf.set_fill_color(*bg)
             pdf.rect(x_ded, y, w_ded, row_h, 'F')
             pdf.set_draw_color(*BORDER)
             pdf.set_line_width(0.3)
             pdf.rect(x_ded, y, w_ded, row_h, 'D')
-
             if i < len(ded_items):
                 lbl, val = ded_items[i]
                 div_x = x_ded + w_ded * 0.48
@@ -6789,9 +7742,7 @@ def build_pdf(path, company, slips):
 
             y += row_h
 
-        # ═══════════════════════════════════════════
-        #  ۵) ردیف جمع‌ها
-        # ═══════════════════════════════════════════
+        # ═══ ۵) ردیف جمع‌ها ═══
         total_ded  = (pay.get('gross_salary') or 0) - (pay.get('net_salary') or 0)
         total_earn = pay.get('gross_salary', 0) or 0
 
@@ -6803,7 +7754,6 @@ def build_pdf(path, company, slips):
         pdf.rect(M, y, CW, sum_h, 'D')
         vline(x_work, y, y + sum_h, color=BORDER2, lw=0.4)
         vline(x_pay,  y, y + sum_h, color=BORDER2, lw=0.4)
-
         put(x_work, y, w_work, sum_h, "جمع کارکرد",
             align='C', size=F_SMALL, color=NAVY)
         put(x_pay,  y, w_pay,  sum_h,
@@ -6814,24 +7764,19 @@ def build_pdf(path, company, slips):
             align='C', size=F_HEAD, color=RED)
         y += sum_h + 3
 
-        # ═══════════════════════════════════════════
-        #  ۶) نوار خالص پرداختی (کرم طلایی + متن سبز)
-        # ═══════════════════════════════════════════
+        # ═══ ۶) نوار خالص پرداختی ═══
         net_h = 12
         pdf.set_fill_color(*GOLD_BG)
         pdf.rect(M, y, CW, net_h, 'F')
         pdf.set_draw_color(*GOLD)
         pdf.set_line_width(0.55)
         pdf.rect(M, y, CW, net_h, 'D')
-
         put(M, y, CW, net_h,
             f"خالص پرداختی:       {fmt(pay.get('net_salary', 0))}       ریال",
             align='C', size=F_NET, color=GREEN)
         y += net_h + 3.5
 
-        # ═══════════════════════════════════════════
-        #  ۷) مبلغ به حروف
-        # ═══════════════════════════════════════════
+        # ═══ ۷) مبلغ به حروف ═══
         words = num_to_words_fa(pay.get('net_salary', 0))
         words_h = 8
         cell(M, y, CW, words_h, "", fill=(252, 252, 254), border=1, lw=0.35)
@@ -6841,9 +7786,7 @@ def build_pdf(path, company, slips):
             align='R', size=F_SMALL, color=PURPLE)
         y += words_h + 2
 
-        # ═══════════════════════════════════════════
-        #  ۸) وضعیت پرداخت + بیمه کارفرما
-        # ═══════════════════════════════════════════
+        # ═══ ۸) وضعیت پرداخت + بیمه کارفرما ═══
         paid = pay.get('payment_status') == 'paid'
         status = "پرداخت شده" if paid else "در انتظار پرداخت"
         if paid and pay.get('payment_date'):
@@ -6863,12 +7806,11 @@ def build_pdf(path, company, slips):
                 align='R', size=F_SMALL, color=ORANGE)
             y += stat_h
 
-        # ═══════════════════════════════════════════
-        #  ۹) سه کادر امضا
-        # ═══════════════════════════════════════════
+        # ═══ ۹) سه کادر امضا ═══
         y += 10
         sig_y = max(y, 248)
-        if sig_y + 28 > 285: sig_y = 250
+        if sig_y + 28 > 285:
+            sig_y = 250
 
         gap   = 4
         box_w = (CW - 2 * gap) / 3
@@ -6884,30 +7826,20 @@ def build_pdf(path, company, slips):
         ]
 
         for bx, title, name, accent in boxes:
-            # پس‌زمینه ملایم
             pdf.set_fill_color(*SOFT_BG)
             pdf.rect(bx, sig_y, box_w, box_h, 'F')
-            # کادر پررنگ با رنگ تاکیدی
             pdf.set_draw_color(*accent)
             pdf.set_line_width(0.45)
             pdf.rect(bx, sig_y, box_w, box_h, 'D')
-
-            # عنوان امضا
             put(bx, sig_y + 2, box_w, 5, title,
                 align='C', size=F_SMALL, color=accent)
-
-            # خط جداکننده طلایی
             pdf.set_draw_color(*GOLD)
             pdf.set_line_width(0.25)
             pdf.line(bx + 5, sig_y + 10, bx + box_w - 5, sig_y + 10)
-
-            # نام
             put(bx, sig_y + box_h - 8, box_w, 5, name,
                 align='C', size=F_TINY, color=MUTED)
 
-        # ═══════════════════════════════════════════
-        #  ۱۰) پانویس
-        # ═══════════════════════════════════════════
+        # ═══ ۱۰) پانویس ═══
         put(M, 289, CW, 4,
             f"صادر شده با {APP_TITLE}   •   {DEVELOPER}   •   {DEVELOPER_PHONE}",
             align='C', size=F_TINY, color=MUTED)
@@ -7391,19 +8323,25 @@ WEB = {'proc': None, 'thread': None, 'port': 8550, 'blocked': False, 'mode': ''}
 
 
 def _lan_ips():
+    if _is_android():
+        # روی اندروید معمولاً IP داخلی قابل استفاده در شبکه نیست
+        return []
     ips = []
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(('10.255.255.255', 1)); ips.append(s.getsockname()[0]); s.close()
+        s.connect(('10.255.255.255', 1))
+        ips.append(s.getsockname()[0])
+        s.close()
     except Exception:
         pass
     try:
         for r in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             ip = r[4][0]
-            if ip not in ips: ips.append(ip)
+            if ip not in ips and not ip.startswith('127.'):
+                ips.append(ip)
     except Exception:
         pass
-    return [i for i in ips if not i.startswith('127.')]
+    return ips
 
 
 def _port_open(port, host='127.0.0.1', timeout=0.4):
@@ -7415,19 +8353,62 @@ def _port_open(port, host='127.0.0.1', timeout=0.4):
 
 
 def _run_flet_web(port):
-    for name in ('app', 'run'):
-        fn = getattr(ft, name, None)
-        if not callable(fn): continue
-        ps = _params(fn)
-        kw = {}
-        if 'host' in ps: kw['host'] = '0.0.0.0'
-        if 'port' in ps: kw['port'] = int(port)
-        if 'view' in ps: kw['view'] = None
+    """اجرای سرور وب — سازگار با دسکتاپ و اندروید."""
+    # روی اندروید، مسیر پیش‌فرض Flet برای وب منطقی نیست
+    if _is_android():
         try:
-            fn(main, **kw); return
-        except TypeError:
-            continue
+            fn = getattr(ft, 'run', None) or getattr(ft, 'app', None)
+            if not callable(fn):
+                raise RuntimeError('تابع اجرای Flet پیدا نشد.')
+            ps = _params(fn)
+            kw = {}
+            if 'host' in ps: kw['host'] = '0.0.0.0'
+            if 'port' in ps: kw['port'] = int(port)
+            if 'name' in ps: kw['name'] = APP_TITLE
+            if 'target' in ps:
+                kw['target'] = main
+                fn(**kw)
+            else:
+                fn(main, **kw)
+            return
+        except Exception as e:
+            log_error(f'Android web run failed: {e}')
+            raise
 
+    # ─── دسکتاپ: همان کد قبلی ───
+    for key in ('FLET_SERVER_IP', 'FLET_SERVER_HOST'):
+        os.environ[key] = '0.0.0.0'
+    # ...
+    for key in ('FLET_SERVER_PORT', 'FLET_PORT', 'PORT'):
+        os.environ[key] = str(int(port))
+        # ⚠️ این دو خط حذف شدند چون باعث باگ WebSocket در Flet 1.0 می‌شوند
+    view_val = None
+    try:
+        AV = getattr(ft, 'AppView', None)
+        if AV is not None and hasattr(AV, 'WEB_BROWSER'):
+            view_val = AV.WEB_BROWSER
+    except Exception:
+        pass
+
+    fn = getattr(ft, 'run', None) or getattr(ft, 'app', None)
+    if not callable(fn):
+        raise RuntimeError('تابع اجرای Flet پیدا نشد.')
+
+    try:
+        ps = _params(fn)
+    except Exception:
+        ps = {}
+
+    kw = {}
+    if 'host' in ps: kw['host'] = '0.0.0.0'
+    if 'port' in ps: kw['port'] = int(port)
+    if 'name' in ps: kw['name'] = APP_TITLE
+    if view_val is not None and 'view' in ps: kw['view'] = view_val
+    if 'target' in ps:  # سبک قدیمی
+        kw['target'] = main
+        fn(**kw)
+    else:
+        fn(main, **kw)
 
 def _thread_web(port):
     try: _run_flet_web(port)
@@ -7440,38 +8421,139 @@ def web_share_active():
 
 
 def web_share_start(port):
-    try: port = int(port)
-    except Exception: return False, 'شماره پورت معتبر نیست.'
-    if not 1024 <= port <= 65535: return False, 'پورت باید بین ۱۰۲۴ تا ۶۵۵۳۵ باشد.'
-    t = WEB['thread']
-    if t and t.is_alive():
-        WEB['blocked'] = False
-        return True, ''
-    if web_share_active(): return True, ''
-    if _port_open(port): return False, 'این پورت در حال استفاده است؛ پورت دیگری انتخاب کنید.'
-    me = os.path.abspath(__file__) if '__file__' in globals() else ''
-    can_proc = (not _is_android() and not getattr(sys, 'frozen', False)
-                and sys.executable and os.path.isfile(me))
     try:
-        if can_proc:
-            WEB['proc'] = subprocess.Popen([sys.executable, me, '--web-share', str(port)],
-                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            WEB['mode'] = 'proc'
-        else:
-            th = threading.Thread(target=_thread_web, args=(port,), daemon=True)
-            th.start(); WEB['thread'] = th; WEB['mode'] = 'thread'
-        for _ in range(30):
-            if _port_open(port): break
-            if WEB['proc'] is not None and WEB['proc'].poll() is not None: break
-            time.sleep(0.25)
-        if not _port_open(port):
-            web_share_stop()
-            return False, 'اجرای سرویس وب روی این دستگاه ممکن نشد.'
-        WEB['port'] = port; WEB['blocked'] = False
-        return True, ''
+        port = int(port)
     except Exception:
-        log_error(traceback.format_exc())
-        return False, 'اجرای سرویس وب ممکن نشد.'
+        return False, 'شماره پورت معتبر نیست.'
+    if not 1024 <= port <= 65535:
+        return False, 'پورت باید بین ۱۰۲۴ تا ۶۵۵۳۵ باشد.'
+
+    # ⬇⬇⬇ این بلوک جدید را اضافه کن ⬇⬇⬇
+    if _is_android():
+        # روی اندروید، subprocess و flet CLI وجود ندارند.
+        # فقط thread داخلی می‌تواند کار کند و فقط از خود گوشی قابل دسترسی است.
+        if web_share_active():
+            return True, ''
+        try:
+            th = threading.Thread(target=_thread_web, args=(port,), daemon=True)
+            th.start()
+            WEB['thread'] = th
+            WEB['mode'] = 'thread'
+            for _ in range(60):
+                if _port_open(port):
+                    WEB['port'] = port
+                    WEB['blocked'] = False
+                    return True, ''
+                if not th.is_alive():
+                    break
+                time.sleep(0.25)
+            return False, (
+                'روی اندروید، اشتراک در شبکه محدود است.\n\n'
+                'روی خود همین گوشی، این آدرس را در مرورگر باز کنید:\n'
+                f'  http://127.0.0.1:{port}/\n\n'
+                'برای اشتراک بین چند گوشی، بهتر است APK را روی هر گوشی '
+                'به‌صورت جداگانه نصب کنید (دیتابیس هر گوشی مستقل است).'
+            )
+        except Exception as e:
+            log_error(traceback.format_exc())
+            return False, f'اجرای سرویس وب روی اندروید ممکن نشد: {e}'
+    # ⬆⬆⬆ پایان بلوک ⬆⬆⬆
+
+    if web_share_active():
+        return True, ''
+    # ... بقیه تابع برای دسکتاپ دست‌نخورده ...
+
+    if _port_open(port):
+        return False, (
+            f'پورت {port} اشغال است. اگر Flet قبلاً روی این پورت اجرا شده، '
+            f'آن را ببندید یا پورت دیگری (مثل {port + 1}) امتحان کنید.'
+        )
+
+    me = os.path.abspath(__file__) if '__file__' in globals() else ''
+    if not me or not os.path.isfile(me):
+        return False, 'مسیر فایل main.py پیدا نشد.'
+
+    env = dict(os.environ)
+    # ⚠️ FLET_FORCE_WEB_SERVER را حذف کردیم چون در Flet 1.0 باگ WebSocket ایجاد می‌کند
+    env.pop('FLET_FORCE_WEB_SERVER', None)
+    env.pop('FLET_WEB_RENDERER', None)
+    env['FLET_SERVER_IP'] = '0.0.0.0'
+    env['FLET_SERVER_PORT'] = str(port)
+
+    # دستورات مختلفی که ممکن است روی این سیستم جواب بدهند
+    candidates = [
+        # ۱. python -m flet run --web (پایدارترین روش)
+        [sys.executable, '-m', 'flet', 'run', '--web',
+         '--host', '0.0.0.0', '--port', str(port), me],
+        # ۲. flet روی PATH
+        ['flet', 'run', '--web',
+         '--host', '0.0.0.0', '--port', str(port), me],
+        # ۳. اجرای مستقیم main.py با --web-share (fallback)
+        [sys.executable, me, '--web-share', str(port)],
+    ]
+
+    for cmd in candidates:
+        # اگر دستور «flet» است ولی روی PATH نیست، رد کن
+        if cmd[0] == 'flet':
+            if shutil.which('flet') is None:
+                continue
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                cwd=os.path.dirname(me) or None,
+            )
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            log_error(f'Popen failed for {cmd[0]} {cmd[1]}: {e}')
+            continue
+
+        # تا ۲۰ ثانیه صبر کن تا پورت باز شود
+        ok = False
+        for _ in range(80):
+            if _port_open(port):
+                ok = True
+                break
+            if proc.poll() is not None:
+                # پروسه مرده — لاگش را بخوان
+                try:
+                    out = proc.stdout.read().decode('utf-8', 'ignore')[:500]
+                    log_error(f'flet subprocess died: {out}')
+                except Exception:
+                    pass
+                break
+            time.sleep(0.25)
+
+        if ok:
+            WEB['proc'] = proc
+            WEB['mode'] = 'proc'
+            WEB['port'] = port
+            WEB['blocked'] = False
+            return True, ''
+
+        # پاکسازی و امتحان بعدی
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    return False, (
+        'سرویس وب بالا نیامد.\n\n'
+        'دستور زیر را در ترمینال خودتان اجرا کنید:\n'
+        f'  flet run --web --host 0.0.0.0 --port {port} main.py\n\n'
+        'سپس در مرورگر این آدرس را باز کنید:\n'
+        f'  http://127.0.0.1:{port}/\n\n'
+        'و از گوشی دیگر (روی همان وای‌فای):\n'
+        f'  http://IP-رایانه:{port}/'
+    )
 
 
 def web_share_stop():
