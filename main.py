@@ -4494,6 +4494,15 @@ class App:
                 "SELECT * FROM attendances WHERE company_id=? AND year=? AND month=?",
                 (self.cid, self.year, self.month))}
         employees = [e for e in c['employees'] if e.get('is_active')]
+        # Distinguish a genuinely empty company from a company whose employees are inactive.
+        all_employee_count = 0
+        try:
+            count_row = self.db.q1(
+                "SELECT COUNT(*) AS n FROM employees WHERE company_id=?", (self.cid,))
+            all_employee_count = int((count_row or {}).get('n') or 0)
+        except Exception:
+            all_employee_count = len(employees)
+        inactive_employee_count = max(0, all_employee_count - len(employees))
         # Build the search index once; do not concatenate every employee's fields on each keystroke.
         employee_search = {
             e['id']: (f"{e.get('first_name','')} {e.get('last_name','')} "
@@ -4570,6 +4579,10 @@ class App:
         except Exception:
             pass
         stats_holder = ft.Container()
+        # IMPORTANT: render() calls v_attendance() before attaching its returned widget
+        # to self.body. Never call page/control.update() during that build phase; doing so
+        # can send updates for controls that are not registered yet and leave Flet Web blank.
+        mount_state = {'ready': False}
         BATCH_SIZE = 10
         ROW_STEP = ROW_H + ROW_GAP
         scroll_state = {
@@ -4579,9 +4592,12 @@ class App:
 
         # ═══════════════════ Highlight ═══════════════════
         def highlight(emp_id):
+            if mount_state['ready'] and not _attendance_view_is_current():
+                return
             prev = ui['focus_emp']
             if prev == emp_id:
                 return
+            changed = []
 
             def apply(eid, color, border=None):
                 for d in refs.values():
@@ -4591,7 +4607,7 @@ class App:
                             r.bgcolor = color
                             if border is not None:
                                 r.border = border
-                            r.update()
+                            changed.append(r)
                         except Exception:
                             pass
 
@@ -4602,6 +4618,13 @@ class App:
             if emp_id is not None:
                 apply(emp_id, alpha(P, 0x22), border_all(1, alpha(P, 0x80)))
             ui['focus_emp'] = emp_id
+            # One patch instead of separate RPCs for the name and numeric row.
+            if changed and mount_state['ready']:
+                try:
+                    if _attendance_view_is_current():
+                        self.page.update(*changed)
+                except Exception:
+                    pass
 
         # ═══════════════════ Helpers ═══════════════════
         def cell_value(emp_id, fname, default=0):
@@ -4641,7 +4664,8 @@ class App:
                         e.control.color = P if current else T()['text']
                         e.control.weight = (ft.FontWeight.BOLD if current
                                             else ft.FontWeight.NORMAL)
-                        e.control.update()
+                        if mount_state['ready'] and _attendance_view_is_current():
+                            e.control.update()
                     except Exception:
                         pass
 
@@ -4808,16 +4832,23 @@ class App:
                     nums_body.controls.append(ft.Container(
                         height=reserved_height, width=COLS_W))
                     scroll_state['spacer'] = True
-                if push_update:
+                if push_update and mount_state['ready']:
+                    # Update only the two changed row collections, not the entire app tree.
+                    # Do not update widgets belonging to a view that has already been replaced.
                     try:
-                        # Send both dirty columns in the same Flet update cycle.
-                        self.page.update()
-                    except Exception:
+                        if _attendance_view_is_current():
+                            self.page.update(names_body, nums_body)
+                    except TypeError:
                         try:
-                            names_body.update()
-                            nums_body.update()
+                            if _attendance_view_is_current():
+                                self.page.update()
                         except Exception:
-                            pass
+                            log_error(traceback.format_exc())
+                    except Exception:
+                        # A user may navigate away while a scroll/load event is in flight.
+                        # Never retry by updating stale individual controls.
+                        if _attendance_view_is_current():
+                            log_error(traceback.format_exc())
                 return stop - begin
             finally:
                 scroll_state['loading'] = False
@@ -4829,7 +4860,11 @@ class App:
                 # extent_after includes the reserved spacer, so use the absolute vertical
                 # position + viewport size to detect when unbuilt rows are approaching.
                 pixels = max(0.0, float(getattr(e, 'pixels', 0.0) or 0.0))
-                inside = getattr(e, 'extent_inside', None)
+                # Current Flet OnScrollEvent exposes viewport_dimension; older builds may
+                # expose extent_inside. Support both, then fall back to measured page height.
+                inside = getattr(e, 'viewport_dimension', None)
+                if inside is None:
+                    inside = getattr(e, 'extent_inside', None)
                 if inside is None or float(inside or 0) <= 0:
                     try:
                         inside = max(240.0, float(self.page.height or 800) - 380.0)
@@ -4849,12 +4884,21 @@ class App:
             return bool(append_next_batch(push_update=True))
 
         def on_body_scroll(e):
+            # Scroll events can arrive during tab disposal on Flet Web.
+            if not mount_state['ready']:
+                return
+            try:
+                if not _attendance_view_is_current():
+                    return
+            except Exception:
+                return
             _maybe_load_more(e)
 
         body_scroll.on_scroll = on_body_scroll
 
         # ═══════════════════ Rebuild ═══════════════════
         def rebuild(e=None):
+            # Safe to build detached controls, but page updates are gated by mount_state below.
             shown = visible_employees()
             scroll_state.update({
                 'shown': shown, 'loaded': 0, 'loading': False,
@@ -4877,41 +4921,62 @@ class App:
                 initial = max(12, min(50, int(max(0.0, page_h - 270) // ROW_STEP) + 4))
                 append_next_batch(limit=initial, push_update=False)
             else:
+                if not state['q'] and not state['dept'] and inactive_employee_count:
+                    empty_name = 'پرسنل ثبت شده‌اند، اما غیرفعال هستند'
+                    empty_detail = f'{inactive_employee_count} نفر غیرفعال؛ وضعیت را در تب پرسنل بررسی کنید.'
+                elif all_employee_count == 0:
+                    empty_name = 'هنوز پرسنلی ثبت نشده است'
+                    empty_detail = 'ابتدا از تب پرسنل، کارمندان را ثبت کنید.'
+                else:
+                    empty_name = 'پرسنلی با این فیلتر یافت نشد'
+                    empty_detail = 'عبارت جستجو یا فیلتر واحد را تغییر دهید.'
                 names_body.controls.append(ft.Container(
-                    content=txt("پرسنلی یافت نشد", 11, True, MUTED,
-                                align=ft.TextAlign.CENTER),
-                    width=NAME_W, height=ROW_H, alignment=center(),
+                    content=ft.Column([
+                        txt(empty_name, 11, True, MUTED, align=ft.TextAlign.CENTER),
+                        txt(empty_detail, 9, color=MUTED, align=ft.TextAlign.CENTER),
+                    ], spacing=3, tight=True, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    width=NAME_W, height=ROW_H + 24, alignment=center(),
                     border=border_all(1, LINE), border_radius=10))
                 nums_body.controls.append(ft.Container(
-                    content=txt("برای این فیلتر پرسنلی وجود ندارد", 11, color=MUTED),
-                    width=COLS_W, height=ROW_H, alignment=center()))
+                    content=txt(empty_detail, 11, color=MUTED),
+                    width=COLS_W, height=ROW_H + 24, alignment=center()))
 
+            if not shown:
+                # Placeholder is a complete row, not an unmaterialized lazy-loading spacer.
+                scroll_state['loaded'] = 0
+                scroll_state['spacer'] = False
             reg = sum(1 for emp in shown if emp['id'] in att_map)
             rem = len(shown) - reg
             pct = (reg / len(shown)) if shown else 0
             stats_holder.content = ft.Column([
                 ft.Row([
-                    badge(f"کل {len(shown)}", P, '#ffffff', 10),
-                    badge(f"✓ {reg}", '#dbeafe', '#1d4ed8', 10),
-                    badge(f"◯ {rem}", '#fef3c7', '#92400e', 10),
+                    badge(f"پرسنل فعال {len(shown)}", P, '#ffffff', 10),
+                    badge(f"✓ دارای کارکرد {reg}", '#dbeafe', '#1d4ed8', 10),
+                    badge(f"◯ بدون کارکرد {rem}", '#fef3c7', '#92400e', 10),
                     ft.Container(expand=True),
                     badge(f"{MONTHS[self.month-1]} {self.year}", A, P, 10),
-                ], spacing=6),
+                ], spacing=6, wrap=True),
                 ft.Container(
                     ft.ProgressBar(value=pct, height=4, color=P,
                                    bgcolor=alpha(P, 0x20)),
                     border_radius=2),
             ], spacing=5)
-            try:
-                # A single diff/update keeps both columns and the counters in agreement.
-                self.page.update()
-            except Exception:
+            # First build happens inside render() before this view is attached to the page.
+            # Prepare data/controls only; App.render() performs the first real page update.
+            if mount_state['ready']:
                 try:
-                    names_body.update()
-                    nums_body.update()
-                    stats_holder.update()
+                    if _attendance_view_is_current():
+                        self.page.update(names_body, nums_body, stats_holder)
+                except TypeError:
+                    try:
+                        if _attendance_view_is_current():
+                            self.page.update()
+                    except Exception:
+                        log_error(traceback.format_exc())
                 except Exception:
-                    pass
+                    # Old-view callbacks must not update controls after navigation.
+                    if _attendance_view_is_current():
+                        log_error(traceback.format_exc())
 
         # ═══════════════════ Actions ═══════════════════
         def save_all(e=None):
@@ -5054,15 +5119,19 @@ class App:
 
         def on_search(e):
             state['q'] = e.control.value or ''
-            # Short debounce keeps search responsive without rebuilding for every keystroke.
-            self.debounce('att_q', rebuild, delay=0.12)
+            # Delayed callbacks may outlive the current tab; re-check identity on dispatch.
+            def rebuild_if_current():
+                if mount_state['ready'] and _attendance_view_is_current():
+                    rebuild()
+            self.debounce('att_q', rebuild_if_current, delay=0.12)
 
         def on_dept(e):
             state['dept'] = e.control.value or ''
-            rebuild()
+            if mount_state['ready'] and _attendance_view_is_current():
+                rebuild()
 
-        # ═══════════════════ Init ═══════════════════
-        rebuild()
+        # Initial rebuild is intentionally deferred until the complete view tree is built.
+        # Calling rebuild() here used to invoke page.update() before the new table was attached.
 
         # ═══════════════════ Top Bar Helper ═══════════════════
         def icon_btn(icon, color, handler, tip):
@@ -5359,7 +5428,12 @@ class App:
             ft.Container(table, expand=True, padding=pad_sym(4, 8)),
         ], spacing=0, expand=True)
 
-        return ft.Stack([main, dimmer, sheet], expand=True)   
+        # The complete tree now exists, so prepare the first data rows. During this initial
+        # build mount_state is still False and rebuild() cannot issue updates to detached IDs.
+        rebuild()
+        # App.render() attaches the returned Stack and performs the first full page update.
+        mount_state['ready'] = True
+        return ft.Stack([main, dimmer, sheet], expand=True)
     # ── حقوق ──
     def v_payroll(self):
         c = self.db.company_data(self.cid)
@@ -10184,5 +10258,3 @@ if __name__ == "__main__":
         _run_flet_web(_port)
     else:
         _safe_ft_run(main)
-
-# Rebuild 18:40:40
