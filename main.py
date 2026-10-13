@@ -4,7 +4,7 @@
 """
 import os, sys, csv, glob, re, shutil, sqlite3, hashlib, hmac, secrets
 import subprocess, traceback, inspect, tempfile, base64, io
-import socket, threading, mimetypes, urllib.parse, http.server, time
+import socket, threading, mimetypes, urllib.parse, http.server, http.client, time, asyncio
 from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
@@ -778,6 +778,8 @@ class Database:
         c.execute("PRAGMA foreign_keys = ON")
         c.execute("PRAGMA synchronous = NORMAL")
         c.execute("PRAGMA temp_store = MEMORY")
+        c.execute("PRAGMA busy_timeout = 15000")
+        c.execute("PRAGMA cache_size = -12000")
         return c
 
     @contextmanager
@@ -1504,24 +1506,32 @@ def export_full_csv(db, svc, cid, year, month):
                      p.get('bonus_amount',0), p['gross_salary'], p['insurance_emp'],
                      p['insurance_er'], p['tax'], p['loan_install'], p['absent_ded'],
                      p['net_salary']])
-    path = os.path.join(export_dir(), f"payroll_full_{year}_{month:02d}.csv")
+    path = os.path.join(export_dir(), f"payroll_full_{year}_{month:02d}_{datetime.now():%Y%m%d_%H%M%S}.csv")
     write_csv(path, header, rows)
     return path
 
 def export_attendance_csv(db, cid, year, month, employees, att_map):
+    """خروجی کارکرد؛ ستون‌های ساعت/دقیقه را مطابق ورودی جدول به هم تبدیل می‌کند."""
     rows = []
+    def combined_hours(a, hour_key, minute_key):
+        total = max(0.0, _as_float(a.get(hour_key)) + _as_float(a.get(minute_key)) / 60.0)
+        return hours_to_hm(total)
     for i, e in enumerate(employees, 1):
         a = att_map.get(e['id'], {})
-        rows.append([i, e['id'], e.get('first_name',''), e.get('last_name',''),
-                     e.get('national_code',''), a.get('work_days',0),
-                     hours_to_hm(a.get('overtime_hours',0)),
-                     hours_to_hm(a.get('night_hours',0)),
-                     hours_to_hm(a.get('absent_hours',0)),
+        rows.append([i, e['id'], e.get('personnel_code') or '', e.get('first_name',''),
+                     e.get('last_name',''), e.get('national_code',''), a.get('work_days',0),
+                     combined_hours(a, 'overtime_hours', 'overtime_minutes'),
+                     combined_hours(a, 'night_hours', 'night_minutes'),
+                     combined_hours(a, 'absent_hours', 'absent_minutes'),
                      a.get('mission_days',0), a.get('shift_percent',0),
-                     a.get('friday_hours',0), a.get('holiday_hours',0)])
-    path = os.path.join(export_dir(), f"timesheet_{year}_{month:02d}.csv")
-    write_csv(path, ['ردیف','کد','نام','فامیل','کد ملی','روز','اضافه','شب','کسر',
-                     'مأموریت','نوبت%','جمعه','تعطیل'], rows)
+                     a.get('friday_hours',0), a.get('holiday_hours',0),
+                     a.get('friday_rest_replaced', 0),
+                     a.get('holiday_rest_replaced', 0), a.get('notes', '')])
+    path = os.path.join(export_dir(), f"timesheet_{year}_{month:02d}_{datetime.now():%Y%m%d_%H%M%S}.csv")
+    write_csv(path, ['ردیف','کد پرسنلی','نام','نام خانوادگی','کد ملی','روز کارکرد',
+                     'اضافه‌کاری (ساعت:دقیقه)','شب‌کاری (ساعت:دقیقه)','کسرکار (ساعت:دقیقه)',
+                     'مأموریت (روز)','نوبت‌کاری (%)','جمعه‌کاری (ساعت)','تعطیل‌کاری (ساعت)',
+                     'استراحت جایگزین جمعه','استراحت جایگزین تعطیل','توضیحات'], rows)
     return path
 
 # ═══════════════════════ PDF ═══════════════════════
@@ -3039,13 +3049,33 @@ class App:
         def do(e):
             row = self.db.q1("SELECT admin_password FROM companies WHERE id=?", (self.cid,))
             stored = row['admin_password'] if row else ''
-            if (pw.value or '') == '8229' or check_pw(pw.value or "", stored):
+            now = time.monotonic()
+            lock_until = getattr(self, '_login_lock_until', 0.0)
+            if now < lock_until:
+                remain = max(1, int(lock_until - now + 0.99))
+                err.value = f"به دلیل تلاش ناموفق، {remain} ثانیه دیگر امتحان کنید."
+                p.update()
+                return
+            if check_pw(pw.value or "", stored):
+                self._login_failures = 0
+                self._login_lock_until = 0.0
                 if not (stored or '').startswith("pbkdf2$"):
                     self.db.x("UPDATE companies SET admin_password=? WHERE id=?",
                               (hash_pw(pw.value), self.cid))
                 self.build_shell()
+                if check_pw('1421', stored):
+                    self.toast("رمز اولیه برنامه 1421 است؛ از بخش «بیشتر ← تغییر رمز» آن را عوض کنید.", True)
             else:
-                err.value = "رمز اشتباه است"; pw.value = ""; p.update()
+                failures = int(getattr(self, '_login_failures', 0)) + 1
+                self._login_failures = failures
+                if failures >= 5:
+                    self._login_failures = 0
+                    self._login_lock_until = time.monotonic() + 30.0
+                    err.value = "۵ تلاش ناموفق؛ ورود برای ۳۰ ثانیه موقتاً متوقف شد."
+                else:
+                    err.value = f"رمز اشتباه است ({failures}/5)"
+                pw.value = ""
+                p.update()
         pw.on_submit = do
         box = ft.Container(
             width=300, padding=24, border_radius=24, bgcolor=T()['card'],
@@ -3121,7 +3151,7 @@ class App:
         else:
             safe_body = self.body
 
-        p.add(self._swipe_wrap(safe_body))
+        p.add(safe_body)
         self._on_page_resize()
         self.go_root(0)
 
@@ -3150,6 +3180,9 @@ class App:
         except Exception: pass
 
     def render(self):
+        # Every page rebuild invalidates pending UI commands from the previous view.
+        # This is particularly important for async scroll_to() responses in Flet Web.
+        self._view_generation = int(getattr(self, "_view_generation", 0)) + 1
         title, builder = self.stack[-1]
         self._view_resize = None
         try: self.page.floating_action_button = None
@@ -4448,59 +4481,73 @@ class App:
         ], expand=True, spacing=6)
 
     def v_attendance(self):
-        """کارکرد پرسنل — طراحی جمع‌وجور حرفه‌ای با هدر گروهی و ستون نام ثابت"""
-        # ==================== Data ====================
-        c = {'employees': self.db.q("SELECT * FROM employees WHERE company_id=? AND is_active=1 ORDER BY id", (self.cid,)),
-             'departments': self.db.q("SELECT * FROM departments WHERE company_id=?", (self.cid,)),
-             'attendances': self.db.q("SELECT * FROM attendances WHERE company_id=? AND year=? AND month=?",
-                                      (self.cid, self.year, self.month))}
+        """کارکرد پرسنل؛ اسکرول عمودی مشترک و هماهنگ‌سازی افقی محدودشده."""
+        # Stale scroll callbacks must never control widgets after this view is replaced.
+        attendance_generation = int(getattr(self, "_view_generation", 0))
+        # ═══════════════════ Data ═══════════════════
+        c = {'employees': self.db.q(
+                "SELECT * FROM employees WHERE company_id=? AND is_active=1 ORDER BY id",
+                (self.cid,)),
+             'departments': self.db.q(
+                "SELECT * FROM departments WHERE company_id=?", (self.cid,)),
+             'attendances': self.db.q(
+                "SELECT * FROM attendances WHERE company_id=? AND year=? AND month=?",
+                (self.cid, self.year, self.month))}
         employees = [e for e in c['employees'] if e.get('is_active')]
+        # Build the search index once; do not concatenate every employee's fields on each keystroke.
+        employee_search = {
+            e['id']: (f"{e.get('first_name','')} {e.get('last_name','')} "
+                      f"{e.get('national_code','')} {e['id']} {e.get('mobile','')} "
+                      f"{e.get('personnel_code','')} {e.get('job_title','')}").casefold()
+            for e in employees
+        }
         rates = self.db.q(
-            "SELECT * FROM rate_years WHERE company_id=? AND year<=? ORDER BY year DESC LIMIT 1",
+            "SELECT * FROM rate_years WHERE company_id=? AND year<=? "
+            "ORDER BY year DESC LIMIT 1",
             (self.cid, self.year))
-        configured_shift_def = rates[0]['shift_percent'] if rates else 15
         shift_def = 0
         att_map = {a['emp_id']: a for a in c['attendances']
-                if a['year'] == self.year and a['month'] == self.month}
+                   if a['year'] == self.year and a['month'] == self.month}
 
+        # ═══════════════════ State + Refs ═══════════════════
         state = {'q': '', 'dept': '', 'sheet': False}
         inputs = {}
-        ui = {'focus_emp': None, 'syncing': False}
+        ui = {'focus_emp': None, 'pos': -99}
         refs = {'names': {}, 'nums': {}}
 
-        FIELDS = ('work_days','overtime_hours','overtime_minutes',
-                'night_hours','night_minutes','absent_hours','absent_minutes',
-                'mission_days','shift_percent','friday_hours','holiday_hours',
-                'friday_rest_replaced','holiday_rest_replaced')
+        FIELDS = ('work_days', 'overtime_hours', 'overtime_minutes',
+                  'night_hours', 'night_minutes', 'absent_hours',
+                  'absent_minutes', 'mission_days', 'shift_percent',
+                  'friday_hours', 'holiday_hours',
+                  'friday_rest_replaced', 'holiday_rest_replaced')
 
-        # ==================== گروه‌بندی ستون‌ها ====================
+        # ═══════════════════ گروه‌بندی ستون‌ها ═══════════════════
         GROUPS = [
-            ('روزهای مزد',  [('work_days', 'روز مزد', 60)]),
-            ('اضافه کاری',  [('overtime_hours', 'ساعت', 56),
+            ('روزهای مزد', [('work_days', 'روز مزد', 60)]),
+            ('اضافه کاری', [('overtime_hours', 'ساعت', 56),
                             ('overtime_minutes', 'دقیقه', 56)]),
-            ('شب کاری',     [('night_hours', 'ساعت', 56),
+            ('شب کاری',    [('night_hours', 'ساعت', 56),
                             ('night_minutes', 'دقیقه', 56)]),
-            ('کسر کار',     [('absent_hours', 'ساعت', 56),
+            ('کسر کار',    [('absent_hours', 'ساعت', 56),
                             ('absent_minutes', 'دقیقه', 56)]),
-            ('مأموریت',     [('mission_days', 'روز', 66)]),
-            ('نوبت',        [('shift_percent', 'درصد', 58)]),
-            ('جمعه',        [('friday_hours', 'ساعت', 56)]),
-            ('تعطیل',       [('holiday_hours', 'ساعت', 56)]),
+            ('مأموریت',    [('mission_days', 'روز', 66)]),
+            ('نوبت',       [('shift_percent', 'درصد', 58)]),
+            ('جمعه',       [('friday_hours', 'ساعت', 56)]),
+            ('تعطیل',      [('holiday_hours', 'ساعت', 56)]),
             ('استراحت جایگزین', [('friday_rest_replaced', 'جمعه ۰/۱', 64),
                                  ('holiday_rest_replaced', 'تعطیل ۰/۱', 64)]),
         ]
         COLS_FLAT = [(k, w) for _, subs in GROUPS for k, _, w in subs]
 
-        # ---- ابعاد (فشرده) ----
+        # ═══════════════════ ابعاد ═══════════════════
         NAME_W, ROW_H, HEAD_H, H_HALF = 134, 38, 52, 26
         ROW_GAP, COL_GAP, OUTER_GAP = 3, 2, 4
         COLS_W = sum(w for _, w in COLS_FLAT) + len(COLS_FLAT) * COL_GAP + 4
 
-        # ---- پالت ----
-        P, A      = T()['primary'], T()['accent']
+        # ═══════════════════ پالت ═══════════════════
+        P, A = T()['primary'], T()['accent']
         CARD, LINE, MUTED = T()['card'], T()['line'], T()['muted']
-        SOFT      = alpha(P, 0x08)
-        SOFT2     = alpha(P, 0x14)
+        SOFT = alpha(P, 0x08)
 
         def shadow(blur=8, y=2, op=0x18):
             try:
@@ -4510,16 +4557,32 @@ class App:
             except Exception:
                 return None
 
-        # ==================== Holders ====================
-        names_body   = ft.ListView(spacing=ROW_GAP, expand=True)
-        nums_body    = ft.ListView(spacing=ROW_GAP, expand=True)
+        # ═══════════════════ Shared vertical viewport ═══════════════════
+        # The names and numeric columns are ordinary (non-scrollable) Columns inside
+        # one outer vertical ScrollView. One gesture moves BOTH columns by the same native
+        # Flutter offset. The employee column stays frozen during horizontal data browsing.
+        names_body = ft.Column(spacing=ROW_GAP, tight=True, width=NAME_W)
+        nums_body = ft.Column(spacing=ROW_GAP, tight=True, width=COLS_W)
+        body_scroll = ft.Column([], spacing=0, scroll=ft.ScrollMode.AUTO, expand=True)
+        try:
+            if hasattr(body_scroll, 'scroll_interval'):
+                body_scroll.scroll_interval = 24  # notifications only drive batched loading
+        except Exception:
+            pass
         stats_holder = ft.Container()
+        BATCH_SIZE = 10
+        ROW_STEP = ROW_H + ROW_GAP
+        scroll_state = {
+            'shown': [], 'loaded': 0, 'loading': False, 'spacer': False,
+            'last_batch_at': 0.0,
+        }
 
-        # ==================== Highlight Row ====================
+        # ═══════════════════ Highlight ═══════════════════
         def highlight(emp_id):
             prev = ui['focus_emp']
             if prev == emp_id:
                 return
+
             def apply(eid, color, border=None):
                 for d in refs.values():
                     r = d.get(eid)
@@ -4531,16 +4594,16 @@ class App:
                             r.update()
                         except Exception:
                             pass
+
             if prev is not None:
                 r = refs['nums'].get(prev)
                 base_bg = r.data['bg'] if r else CARD
                 apply(prev, base_bg, border_all(1, LINE))
             if emp_id is not None:
-                apply(emp_id, alpha(P, 0x22),
-                    border_all(1, alpha(P, 0x80)))
+                apply(emp_id, alpha(P, 0x22), border_all(1, alpha(P, 0x80)))
             ui['focus_emp'] = emp_id
 
-        # ==================== Helpers ====================
+        # ═══════════════════ Helpers ═══════════════════
         def cell_value(emp_id, fname, default=0):
             key = (emp_id, fname)
             if key in inputs:
@@ -4551,13 +4614,9 @@ class App:
             return f"{v:g}" if isinstance(v, float) else str(v)
 
         def visible_employees():
-            q = (state['q'] or '').strip().lower()
             out = []
             for emp in employees:
-                full = (f"{emp.get('first_name','')} {emp.get('last_name','')} "
-                        f"{emp.get('national_code','')} {emp['id']} "
-                        f"{emp.get('mobile','')} {emp.get('personnel_code','')} "
-                        f"{emp.get('job_title','')}").lower()
+                full = employee_search.get(emp['id'], '')
                 if not _match_words(full, state['q']):
                     continue
                 if state['dept'] and str(emp.get('dept_id') or '') != str(state['dept']):
@@ -4565,50 +4624,49 @@ class App:
                 out.append(emp)
             return out
 
-        # ==================== Field ====================
+        # ═══════════════════ Field ═══════════════════
         def num_field(emp, fname, default=0):
             key = (emp['id'], fname)
             raw = cell_value(emp['id'], fname, default)
             filled = raw != ""
 
-            def on_change(e, k=key):
-                inputs[k] = e.control.value
-                try:
-                    e.control.color = P if e.control.value else T()['text']
-                    e.control.weight = ft.FontWeight.BOLD if e.control.value else ft.FontWeight.NORMAL
-                    e.control.update()
-                except Exception:
-                    pass
+            def on_change(e, k=key, initial=raw):
+                # Store every keystroke locally. Only send an extra style update when the
+                # field crosses empty/non-empty; never round-trip the UI on each character.
+                previous = inputs.get(k, initial)
+                current = e.control.value or ''
+                inputs[k] = current
+                if bool(previous) != bool(current):
+                    try:
+                        e.control.color = P if current else T()['text']
+                        e.control.weight = (ft.FontWeight.BOLD if current
+                                            else ft.FontWeight.NORMAL)
+                        e.control.update()
+                    except Exception:
+                        pass
 
             def on_focus(e, eid=emp['id']):
-                ui['focus_emp'] = eid
-                highlight(eid)
-                shown = visible_employees()
-                try:
-                    idx = next(i for i, x in enumerate(shown) if x['id'] == eid)
-                except StopIteration:
-                    return
-                off = idx * (ROW_H + ROW_GAP)
-                try:
-                    nums_scroll.scroll_to(offset=off, duration=150)
-                    names_scroll.scroll_to(offset=off, duration=150)
-                except Exception:
-                    pass
+                # The focused TextField is already inside the one shared scroll viewport.
+                # Do not issue scroll_to calls: they used to race each other and were not
+                # awaited in older builds, producing the exact lag reported by the user.
+                highlight(eid)  # highlight() also owns the focus_emp state transition
 
             return K(ft.TextField,
-                    value=raw, dense=True, text_size=13,
-                    text_align=ft.TextAlign.CENTER,
-                    keyboard_type=ft.KeyboardType.NUMBER,
-                    content_padding=pad_sym(2, 4),
-                    color=P if filled else T()['text'],
-                    weight=ft.FontWeight.BOLD if filled else ft.FontWeight.NORMAL,
-                    bgcolor='transparent',
-                    border=ft.InputBorder.NONE,
-                    on_change=on_change,
-                    on_focus=on_focus,
-                    height=32)
+                     value=raw, dense=True, text_size=13,
+                     text_align=ft.TextAlign.CENTER,
+                     keyboard_type=ft.KeyboardType.NUMBER,
+                     content_padding=pad_sym(2, 4),
+                     color=P if filled else T()['text'],
+                     weight=(ft.FontWeight.BOLD if filled
+                             else ft.FontWeight.NORMAL),
+                     bgcolor='transparent',
+                     border=(ft.NoInputBorder() if hasattr(ft, 'NoInputBorder')
+                             else ft.InputBorder.NONE),
+                     on_change=on_change,
+                     on_focus=on_focus,
+                     height=32)
 
-        # ==================== Rows ====================
+        # ═══════════════════ Rows ═══════════════════
         def name_row(emp, idx):
             is_even = (idx % 2 == 0)
             bg = CARD if is_even else SOFT
@@ -4627,7 +4685,8 @@ class App:
 
             c = ft.Container(
                 content=ft.Row([
-                    txt(str(idx + 1), 7, color=MUTED, width=14, align=ft.TextAlign.CENTER),
+                    txt(str(idx + 1), 7, color=MUTED, width=14,
+                        align=ft.TextAlign.CENTER),
                     avatar,
                     ft.Column([
                         txt(f"{emp.get('first_name','')} {emp.get('last_name','')}",
@@ -4641,7 +4700,7 @@ class App:
                 bgcolor=bg,
                 border=border_all(1, bd),
                 border_radius=10,
-                shadow=shadow(4, 1, 0x0A))
+                )
             c.data = {'bg': bg}
             refs['names'][emp['id']] = c
             return c
@@ -4661,21 +4720,20 @@ class App:
                     border_radius=7))
             c = ft.Container(
                 content=ft.Row(cells, spacing=COL_GAP,
-                            vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                               vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 height=ROW_H, width=COLS_W, padding=pad_sym(3, 3),
                 bgcolor=bg, border=border_all(1, bd), border_radius=10,
-                shadow=shadow(4, 1, 0x0A))
+                )
             c.data = {'bg': bg}
             refs['nums'][emp['id']] = c
             return c
 
-        # ==================== Grouped Header ====================
+        # ═══════════════════ Header ═══════════════════
         def group_cell(title, subs):
             total_w = sum(w for _, _, w in subs) + (len(subs) - 1) * COL_GAP
             top = ft.Container(
                 content=txt(title, 11, True, '#ffffff'),
-                height=H_HALF, alignment=center(),
-                bgcolor=P)
+                height=H_HALF, alignment=center(), bgcolor=P)
             if len(subs) == 1:
                 bot = ft.Container(
                     content=txt(subs[0][1], 10, True, '#ffffff'),
@@ -4689,7 +4747,7 @@ class App:
                     bgcolor=alpha(P, 0xC0))
                     for _, lbl, w in subs]
                 inner = ft.Column([top, ft.Row(sub_cells, spacing=COL_GAP)],
-                                spacing=1, tight=True)
+                                  spacing=1, tight=True)
             return ft.Container(
                 content=inner, width=total_w, height=HEAD_H,
                 border_radius=10, clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
@@ -4709,73 +4767,153 @@ class App:
             shadow=shadow(6, 2, 0x20),
             alignment=center())
 
-        # ==================== Scroll Sync ====================
-        def on_names_scroll(e):
-            p_ = getattr(e, 'pixels', None)
-            if p_ is None or abs(p_ - ui.get('pos', -99)) < 1.5:
-                return
-            ui['pos'] = p_
-            try: nums_scroll.scroll_to(offset=p_, duration=0)
-            except Exception: pass
+        # ═══════════════════ Shared vertical scroll + batched rows ═══════════════════
+        TABLE_W = NAME_W + COLS_W + OUTER_GAP
 
-        def on_nums_scroll(e):
-            p_ = getattr(e, 'pixels', None)
-            if p_ is None or abs(p_ - ui.get('pos', -99)) < 1.5:
-                return
-            ui['pos'] = p_
-            try: names_scroll.scroll_to(offset=p_, duration=0)
-            except Exception: pass
+        def append_next_batch(limit=None, push_update=False):
+            """Append paired name/number rows into one shared vertical scroll surface."""
+            if scroll_state['loading']:
+                return 0
+            shown = scroll_state['shown']
+            begin = scroll_state['loaded']
+            if begin >= len(shown):
+                return 0
+            scroll_state['loading'] = True
+            try:
+                # The last pair of controls reserves the height of not-yet-built rows.
+                # This keeps the scrollbar extent stable without creating hundreds of
+                # TextFields at startup; actual rows are materialized before reaching them.
+                if scroll_state['spacer']:
+                    try:
+                        names_body.controls.pop()
+                        nums_body.controls.pop()
+                    except Exception:
+                        pass
+                    scroll_state['spacer'] = False
 
-        names_scroll = names_body
-        nums_scroll = nums_body
-        names_scroll.on_scroll = on_names_scroll
-        nums_scroll.on_scroll = on_nums_scroll
+                count = int(limit or BATCH_SIZE)
+                stop = min(len(shown), begin + max(1, count))
+                for idx in range(begin, stop):
+                    emp = shown[idx]
+                    # Same row index, height and spacing in both columns; vertical motion
+                    # is inherited from body_scroll, never copied through scroll_to.
+                    names_body.controls.append(name_row(emp, idx))
+                    nums_body.controls.append(nums_row(emp, idx))
+                scroll_state['loaded'] = stop
+                remaining = max(0, len(shown) - stop)
+                if remaining:
+                    reserved_height = max(0, remaining * ROW_STEP - ROW_GAP)
+                    names_body.controls.append(ft.Container(
+                        height=reserved_height, width=NAME_W))
+                    nums_body.controls.append(ft.Container(
+                        height=reserved_height, width=COLS_W))
+                    scroll_state['spacer'] = True
+                if push_update:
+                    try:
+                        # Send both dirty columns in the same Flet update cycle.
+                        self.page.update()
+                    except Exception:
+                        try:
+                            names_body.update()
+                            nums_body.update()
+                        except Exception:
+                            pass
+                return stop - begin
+            finally:
+                scroll_state['loading'] = False
 
-        # ==================== Rebuild ====================
+        def _maybe_load_more(e):
+            if scroll_state['loading'] or scroll_state['loaded'] >= len(scroll_state['shown']):
+                return False
+            try:
+                # extent_after includes the reserved spacer, so use the absolute vertical
+                # position + viewport size to detect when unbuilt rows are approaching.
+                pixels = max(0.0, float(getattr(e, 'pixels', 0.0) or 0.0))
+                inside = getattr(e, 'extent_inside', None)
+                if inside is None or float(inside or 0) <= 0:
+                    try:
+                        inside = max(240.0, float(self.page.height or 800) - 380.0)
+                    except Exception:
+                        inside = 420.0
+                viewport_end = pixels + max(0.0, float(inside))
+                materialized_end = max(0, scroll_state['loaded']) * ROW_STEP
+                near_end = viewport_end >= materialized_end - ROW_STEP * 5
+            except Exception:
+                near_end = False
+            if not near_end:
+                return False
+            now = time.monotonic()
+            if now - float(scroll_state.get('last_batch_at', 0.0)) < 0.10:
+                return False
+            scroll_state['last_batch_at'] = now
+            return bool(append_next_batch(push_update=True))
+
+        def on_body_scroll(e):
+            _maybe_load_more(e)
+
+        body_scroll.on_scroll = on_body_scroll
+
+        # ═══════════════════ Rebuild ═══════════════════
         def rebuild(e=None):
             shown = visible_employees()
+            scroll_state.update({
+                'shown': shown, 'loaded': 0, 'loading': False,
+                'spacer': False, 'last_batch_at': 0.0,
+            })
             names_body.controls.clear()
             nums_body.controls.clear()
             refs['names'].clear()
             refs['nums'].clear()
-            for idx, emp in enumerate(shown):
-                names_body.controls.append(name_row(emp, idx))
-                nums_body.controls.append(nums_row(emp, idx))
-            names_body.controls.append(ft.Container(height=220))
-            nums_body.controls.append(ft.Container(height=220))
-            if not shown:
-                names_body.controls.clear()
-                nums_body.controls.clear()
-                names_body.controls.append(
-                    self.empty("پرسنلی یافت نشد", _ic('PEOPLE_OUTLINE')))
+            ui['focus_emp'] = None
+
+            if shown:
+                # Build a modest first page; more rows are appended only near the end.
+                try:
+                    page_h = float(self.page.height or 800)
+                except Exception:
+                    page_h = 800.0
+                # Prefill beyond the estimated viewport; otherwise a tall desktop page
+                # could have no scrollbar yet and never request the next batch.
+                initial = max(12, min(50, int(max(0.0, page_h - 270) // ROW_STEP) + 4))
+                append_next_batch(limit=initial, push_update=False)
+            else:
+                names_body.controls.append(ft.Container(
+                    content=txt("پرسنلی یافت نشد", 11, True, MUTED,
+                                align=ft.TextAlign.CENTER),
+                    width=NAME_W, height=ROW_H, alignment=center(),
+                    border=border_all(1, LINE), border_radius=10))
+                nums_body.controls.append(ft.Container(
+                    content=txt("برای این فیلتر پرسنلی وجود ندارد", 11, color=MUTED),
+                    width=COLS_W, height=ROW_H, alignment=center()))
 
             reg = sum(1 for emp in shown if emp['id'] in att_map)
             rem = len(shown) - reg
             pct = (reg / len(shown)) if shown else 0
-
             stats_holder.content = ft.Column([
                 ft.Row([
                     badge(f"کل {len(shown)}", P, '#ffffff', 10),
                     badge(f"✓ {reg}", '#dbeafe', '#1d4ed8', 10),
                     badge(f"◯ {rem}", '#fef3c7', '#92400e', 10),
                     ft.Container(expand=True),
-                    badge(f"{MONTHS[self.month-1]} {self.year}",
-                        A, P, 10),
+                    badge(f"{MONTHS[self.month-1]} {self.year}", A, P, 10),
                 ], spacing=6),
                 ft.Container(
                     ft.ProgressBar(value=pct, height=4, color=P,
-                                bgcolor=alpha(P, 0x20)),
+                                   bgcolor=alpha(P, 0x20)),
                     border_radius=2),
             ], spacing=5)
-
             try:
-                names_body.update()
-                nums_body.update()
-                stats_holder.update()
+                # A single diff/update keeps both columns and the counters in agreement.
+                self.page.update()
             except Exception:
-                pass
+                try:
+                    names_body.update()
+                    nums_body.update()
+                    stats_holder.update()
+                except Exception:
+                    pass
 
-        # ==================== Actions ====================
+        # ═══════════════════ Actions ═══════════════════
         def save_all(e=None):
             dim = days_in_month(self.year, self.month)
             errors, staged = [], []
@@ -4783,62 +4921,77 @@ class App:
                 touched = any((emp['id'], f) in inputs for f in FIELDS)
                 if emp['id'] not in att_map and not touched:
                     continue
+
                 def n(fname, default=0, emp=emp):
                     key = (emp['id'], fname)
                     if key in inputs:
                         return parse_float(inputs[key])
                     return parse_float(att_map.get(emp['id'], {}).get(fname, default))
+
                 work = n('work_days')
                 ot_h = n('overtime_hours'); ot_m = n('overtime_minutes')
                 ng_h = n('night_hours');    ng_m = n('night_minutes')
                 ab_h = n('absent_hours');   ab_m = n('absent_minutes')
                 mission = n('mission_days'); shift = n('shift_percent', shift_def)
                 friday = n('friday_hours'); holiday = n('holiday_hours')
-                friday_replaced = n('friday_rest_replaced'); holiday_replaced = n('holiday_rest_replaced')
+                fr = n('friday_rest_replaced'); hr = n('holiday_rest_replaced')
                 label = f"{emp.get('first_name','')} {emp.get('last_name','')}"
+
                 if work < 0 or work > dim:
                     errors.append(f"{label}: روز ۰-{dim}"); continue
                 if not (0 <= ot_m <= 59 and 0 <= ng_m <= 59 and 0 <= ab_m <= 59):
                     errors.append(f"{label}: دقیقه ۰-۵۹"); continue
-                if min(ot_h, ng_h, ab_h, mission, shift, friday, holiday, friday_replaced, holiday_replaced) < 0:
+                if min(ot_h, ng_h, ab_h, mission, shift, friday, holiday,
+                       fr, hr) < 0:
                     errors.append(f"{label}: منفی مجاز نیست"); continue
                 if mission > dim or shift > 100:
                     errors.append(f"{label}: خارج از محدوده"); continue
-                if friday_replaced not in (0, 1) or holiday_replaced not in (0, 1):
-                    errors.append(f"{label}: استراحت جایگزین باید ۰ یا ۱ باشد"); continue
+                if fr not in (0, 1) or hr not in (0, 1):
+                    errors.append(f"{label}: استراحت جایگزین ۰/۱"); continue
+
                 staged.append(dict(
                     emp_id=emp['id'], year=self.year, month=self.month,
-                    work_days=work, overtime_hours=ot_h, overtime_minutes=ot_m,
-                    night_hours=ng_h, night_minutes=ng_m,
-                    absent_hours=ab_h, absent_minutes=ab_m,
-                    mission_days=mission, shift_percent=shift,
-                    friday_hours=friday, holiday_hours=holiday,
-                    friday_rest_replaced=int(friday_replaced), holiday_rest_replaced=int(holiday_replaced)))
+                    work_days=work, overtime_hours=ot_h,
+                    overtime_minutes=ot_m, night_hours=ng_h,
+                    night_minutes=ng_m, absent_hours=ab_h,
+                    absent_minutes=ab_m, mission_days=mission,
+                    shift_percent=shift, friday_hours=friday,
+                    holiday_hours=holiday,
+                    friday_rest_replaced=int(fr),
+                    holiday_rest_replaced=int(hr)))
+
             if errors:
                 self.info('بررسی', 'ذخیره نشد:\n\n' + '\n'.join(errors[:15]))
                 return
+            self.db.upsert_attendances(self.cid, staged)
             for rec in staged:
-                self.db.upsert_attendance(self.cid, rec)
+                # Keep the in-memory view/cache aligned with SQLite without rebuilding tabs.
+                att_map[rec['emp_id']] = dict(rec)
             inputs.clear()
+            rebuild()
             self.toast(f'✅ {len(staged)} رکورد ذخیره شد.')
-            self.refresh()
 
         def copy_prev(e=None):
             py, pm = ((self.year, self.month - 1)
-                    if self.month > 1 else (self.year - 1, 12))
+                      if self.month > 1 else (self.year - 1, 12))
             ids = {emp['id'] for emp in employees}
             prev = [a for a in self.db.q(
                         "SELECT * FROM attendances WHERE company_id=? AND year=? AND month=?",
                         (self.cid, py, pm)) if a['emp_id'] in ids]
             if not prev:
-                self.toast('ماه قبل اطلاعاتی ندارد.', True); return
+                self.toast('ماه قبل اطلاعاتی ندارد.', True)
+                return
+
             def go():
-                for a in prev:
-                    self.db.upsert_attendance(
-                        self.cid, dict(a, year=self.year, month=self.month))
+                copied = [dict(a, year=self.year, month=self.month) for a in prev]
+                self.db.upsert_attendances(self.cid, copied)
+                for rec in copied:
+                    att_map[rec['emp_id']] = dict(rec)
                 inputs.clear()
-                self.toast(f'✅ {len(prev)} رکورد کپی شد.'); self.refresh()
-            self.confirm(f'کارکرد {len(prev)} نفر از ماه قبل کپی شود؟', go, 'کپی', False)
+                rebuild()
+                self.toast(f'✅ {len(prev)} رکورد کپی شد.')
+            self.confirm(f'کارکرد {len(prev)} نفر از ماه قبل کپی شود؟',
+                         go, 'کپی', False)
 
         def clear_month(e=None):
             def go():
@@ -4847,14 +5000,16 @@ class App:
                         "DELETE FROM attendances WHERE company_id=? AND year=? AND month=?",
                         (self.cid, self.year, self.month))
                 inputs.clear()
-                self.toast('🗑 کارکرد ماه پاک شد'); self.refresh()
+                att_map.clear()
+                rebuild()
+                self.toast('🗑 کارکرد ماه پاک شد')
             self.confirm(f"همه کارکرد {MONTHS[self.month-1]} {self.year} پاک شود؟",
-                        go, 'حذف')
+                         go, 'حذف')
 
         def export_sheet(e=None):
             try:
-                path = export_attendance_csv(self.db, self.cid, self.year, self.month,
-                                            employees, att_map)
+                path = export_attendance_csv(self.db, self.cid, self.year,
+                                             self.month, employees, att_map)
                 self.file_dialog(path, "✅ CSV کارکرد ساخته شد")
             except Exception as ex:
                 self.info("خطا", str(ex))
@@ -4877,43 +5032,39 @@ class App:
             }
             for emp in employees:
                 pattern = emp.get('shift_pattern') or 'none'
-                inputs[(emp['id'], 'shift_percent')] = str(shift_rates.get(pattern, 0.0))
+                inputs[(emp['id'], 'shift_percent')] = str(
+                    shift_rates.get(pattern, 0.0))
             rebuild()
             self.toast('✅ درصد نوبت مطابق الگوی هر پرسنل پر شد')
 
         def clear_inputs(e=None):
-            inputs.clear(); rebuild()
+            inputs.clear()
+            rebuild()
             self.toast("🔄 فرم پاک شد")
-
-        def toggle_sheet(e=None):
-            state['sheet'] = not state['sheet']
-            try:
-                dimmer.visible = state['sheet']
-                sheet.visible = state['sheet']
-                dimmer.update(); sheet.update()
-            except Exception:
-                pass
 
         def change_year(e):
             y = parse_int(e.control.value)
             if 1300 <= y <= 1500 and y != self.year:
-                self.year = y; self.refresh()
+                self.year = y
+                self.refresh()
 
         def change_month(e):
-            self.month = int(e.control.value); self.refresh()
+            self.month = int(e.control.value)
+            self.refresh()
 
         def on_search(e):
             state['q'] = e.control.value or ''
-            self.debounce('att_q', rebuild)
+            # Short debounce keeps search responsive without rebuilding for every keystroke.
+            self.debounce('att_q', rebuild, delay=0.12)
 
         def on_dept(e):
             state['dept'] = e.control.value or ''
             rebuild()
 
-        # ==================== Init ====================
+        # ═══════════════════ Init ═══════════════════
         rebuild()
 
-        # ==================== Top Bar ====================
+        # ═══════════════════ Top Bar Helper ═══════════════════
         def icon_btn(icon, color, handler, tip):
             return ft.Container(
                 content=ft.Icon(icon, color='#ffffff', size=20),
@@ -4921,112 +5072,285 @@ class App:
                 border_radius=10, shadow=shadow(6, 2, 0x28),
                 on_click=handler, ink=True, tooltip=tip)
 
+        # ابتدا فقط ظرف پنل را می‌سازیم؛ محتوای دکمه‌ها پایین‌تر و پس از تعریف
+        # action_tile به آن متصل می‌شود. ساخت کامل پنل در این نقطه باعث NameError می‌شد.
+        panel_inner = ft.Container(
+            content=ft.Column([], spacing=8, tight=True, scroll=ft.ScrollMode.AUTO),
+            bgcolor=CARD, border_radius=20,
+            shadow=shadow(24, 8, 0x55), padding=16)
+
+        # ── Container بیرونی که موقعیت + مخفی‌بودن را کنترل می‌کند ──
+        sheet = ft.Container(
+            content=panel_inner,
+            left=0, right=0, bottom=0,
+            visible=False)
+
+        # Dimmer
+        dimmer = ft.Container(
+            bgcolor='#00000070',
+            left=0, right=0, top=0, bottom=0,
+            visible=False)
+
+        # ═══════════════════ Toggle Sheet (بعد از تعریف sheet و dimmer) ═══════════════════
+        def toggle_sheet(e=None):
+            state['sheet'] = not state['sheet']
+            try:
+                dimmer.visible = state['sheet']
+                sheet.visible = state['sheet']
+                dimmer.update()
+                sheet.update()
+            except Exception:
+                pass
+
+        def close_sheet(e=None):
+            if state['sheet']:
+                toggle_sheet()
+
+        # اتصال on_click به dimmer بعد از تعریف toggle_sheet
+        try:
+            dimmer.on_click = toggle_sheet
+        except Exception:
+            pass
+
+        # ═══════════════════ Action Tile ═══════════════════
+        def action_tile(icon, label, sub, color, handler):
+            return ft.Container(
+                content=ft.Column([
+                    ft.Container(
+                        ft.Icon(icon, color='#ffffff', size=20),
+                        width=40, height=40, bgcolor=color,
+                        border_radius=10, alignment=center(),
+                        shadow=shadow(4, 2, 0x30)),
+                    txt(label, 11, True, T()['text'],
+                        align=ft.TextAlign.CENTER),
+                    txt(sub, 8, color=MUTED, align=ft.TextAlign.CENTER),
+                ], spacing=4, tight=True,
+                   horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=pad_sym(6, 10),
+                border_radius=12,
+                bgcolor=alpha(color, 0x12),
+                border=border_all(1, alpha(color, 0x33)),
+                ink=True, on_click=handler, expand=True)
+
+        # محتوای پنل پس از تعریف action_tile ساخته می‌شود.
+        panel_inner.content = ft.Column([
+            ft.Container(
+                ft.Container(width=42, height=4,
+                             bgcolor=alpha(P, 0x55), border_radius=2),
+                alignment=center()),
+            ft.Row([
+                ft.Container(
+                    ft.Icon(_ic('TUNE'), color='#ffffff', size=16),
+                    width=32, height=32, bgcolor=P,
+                    border_radius=8, alignment=center()),
+                ft.Column([
+                    txt("پنل کنترل کارکرد", 13, True),
+                    txt(f"{MONTHS[self.month-1]} {self.year}",
+                        9, color=MUTED),
+                ], spacing=0, expand=True),
+                ft.IconButton(_ic('CLOSE'), on_click=toggle_sheet,
+                              icon_color=MUTED, icon_size=18,
+                              tooltip='بستن'),
+            ], spacing=8,
+               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Divider(height=1, color=LINE),
+
+            dd("واحد سازمانی",
+               [('', 'همه واحدها')] + [(d['id'], d['title'])
+                                       for d in c['departments']],
+               state['dept'], on_dept, size=12),
+
+            ft.Divider(height=1, color=LINE),
+            txt("⚡ عملیات سریع", 11, True, P),
+
+            ft.Row([
+                action_tile(_ic('SAVE'), 'ذخیره', 'کارکرد ماه',
+                            '#047857',
+                            lambda e: (close_sheet(), save_all())),
+                action_tile(_ic('BOLT'), 'تکمیل روز', 'همه پرسنل',
+                            '#0891b2',
+                            lambda e: (fill_all(), close_sheet())),
+            ], spacing=6),
+
+            ft.Row([
+                action_tile(_ic('CONTENT_COPY'), 'کپی ماه قبل',
+                            'از ماه گذشته', '#7c3aed',
+                            lambda e: (close_sheet(), copy_prev())),
+                action_tile(_ic('PERCENT'), 'نوبت پیش‌فرض',
+                            'از الگوی پرسنل', '#d97706',
+                            lambda e: (fill_shift_default(), close_sheet())),
+            ], spacing=6),
+
+            ft.Row([
+                action_tile(_ic('DOWNLOAD'), 'CSV', 'خروجی اکسل',
+                            P,
+                            lambda e: (close_sheet(), export_sheet())),
+                action_tile(_ic('REFRESH'), 'پاک فرم', 'بازنشانی',
+                            '#64748b',
+                            lambda e: (clear_inputs(), close_sheet())),
+                action_tile(_ic('DELETE'), 'حذف ماه', 'کل کارکرد',
+                            '#c0392b',
+                            lambda e: (close_sheet(), clear_month())),
+            ], spacing=6),
+
+            ft.Container(height=6),
+        ], spacing=8, tight=True, scroll=ft.ScrollMode.AUTO)
+
+        # ═══════════════════ Top Bar ═══════════════════
         top_bar = ft.Container(
             content=ft.Column([
                 ft.Row([
-                    tf("سال", self.year, kb=True, width=80, size=13, on_change=change_year),
+                    tf("سال", self.year, kb=True, width=80, size=13,
+                       on_change=change_year),
                     dd("ماه", [(i + 1, m) for i, m in enumerate(MONTHS)],
                        self.month, change_month, expand=True, size=13),
-                    icon_btn(_ic('SAVE'), T()['success'], save_all, 'ذخیره کارکرد'),
+                    icon_btn(_ic('SAVE'), T()['success'], save_all, 'ذخیره'),
                     icon_btn(_ic('TUNE'), P, toggle_sheet, 'پنل کنترل'),
                 ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                tf("جستجوی پرسنل (نام، فامیل، کد، شغل — هر کلمه جدا)", value=state['q'],
+                tf("جستجوی پرسنل...", value=state['q'],
                    on_change=on_search, prefix=_ic('SEARCH'), size=13),
             ], spacing=6, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
             padding=pad_sym(8, 10))
 
-        # ==================== Stats Bar ====================
+        # ═══════════════════ Stats Bar ═══════════════════
         stats_bar = ft.Container(stats_holder, padding=pad_sym(6, 12))
 
-        # ==================== Table ====================
-        # ✅ FIX: حذف expand=True از names_col تا فاصله با ستون‌های عددی از بین برود
-        names_col = ft.Column([
-            name_header,
-            names_scroll,
-        ], spacing=4, tight=True, width=NAME_W)
-
-        nums_col = ft.Column([
-            build_nums_header(),
-            nums_scroll,
-        ], spacing=4, tight=True, width=COLS_W)
-
-        nums_hs = ft.Row([nums_col], scroll=ft.ScrollMode.AUTO, expand=True,
-                        vertical_alignment=ft.CrossAxisAlignment.STRETCH)
-
-        table = ft.Row(
-            [names_col, nums_hs],
-            spacing=OUTER_GAP, expand=True,
+        # ═══════════════════ Table layout ═══════════════════
+        # Only horizontal scrolling is mirrored (header <-> numeric cells). Vertical
+        # scrolling belongs to body_scroll and contains BOTH columns as one child row.
+        header_nums_hscroll = ft.Row(
+            [build_nums_header()], scroll=ft.ScrollMode.AUTO, expand=True,
             vertical_alignment=ft.CrossAxisAlignment.STRETCH)
+        nums_hscroll = ft.Row(
+            [nums_body], scroll=ft.ScrollMode.AUTO, expand=True,
+            vertical_alignment=ft.CrossAxisAlignment.STRETCH)
+        for _horizontal in (header_nums_hscroll, nums_hscroll):
+            try:
+                if hasattr(_horizontal, 'scroll_interval'):
+                    # Scroll events are notifications, not a frame-by-frame RPC stream.
+                    _horizontal.scroll_interval = 75
+            except Exception:
+                pass
 
-        # ==================== Popup Sheet ====================
-        sheet_content = ft.Column([
-            ft.Row([
-                ft.Icon(_ic('TUNE'), size=17, color=P),
-                txt("پنل کنترل", 14, True),
-                ft.Container(expand=True),
-                ft.IconButton(_ic('CLOSE'), on_click=toggle_sheet,
-                            icon_color=MUTED, icon_size=20),
-            ]),
-            ft.Divider(height=1, color=LINE),
-            dd("واحد سازمانی",
-            [('', 'همه واحدها')] + [(d['id'], d['title'])
-                                    for d in c['departments']],
-            state['dept'], on_dept, size=13),
-            ft.Divider(height=1, color=LINE),
-            ft.Row([
-                gbtn('💾 ذخیره همه', _ic('SAVE'), save_all, '#047857',
-                    expand=True, height=44, size=12),
-                obtn('⚡ تکمیل روزهای مزد', _ic('BOLT'), fill_all,
-                    expand=True, height=44),
-            ], spacing=8),
-            ft.Row([
-                obtn('📋 کپی ماه قبل', _ic('CONTENT_COPY'), copy_prev,
-                    expand=True, height=42),
-                obtn('🎯 نوبت پیش‌فرض', _ic('PERCENT'), fill_shift_default,
-                    expand=True, height=42),
-            ], spacing=8),
-            ft.Row([
-                obtn('📥 CSV', _ic('DOWNLOAD'), export_sheet,
-                    expand=True, height=42),
-                obtn('🔄 پاک فرم', _ic('REFRESH'), clear_inputs,
-                    expand=True, height=42),
-                obtn('🗑 حذف ماه', _ic('DELETE'), clear_month,
-                    expand=True, height=42),
-            ], spacing=8),
-        ], spacing=10, tight=True, scroll=ft.ScrollMode.AUTO)
+        body_row = ft.Row(
+            [names_body, nums_hscroll],
+            spacing=OUTER_GAP,
+            vertical_alignment=ft.CrossAxisAlignment.STRETCH,
+        )
+        body_scroll.controls = [body_row]
 
-        dimmer = ft.Container(
-            bgcolor='#00000070', left=0, right=0, top=0, bottom=0,
-            visible=False, on_click=toggle_sheet)
+        # Horizontal offsets are synchronized safely with awaited scroll_to. This is only
+        # a horizontal-header alignment helper; vertical position is never synchronized in code.
+        h_sync = {
+            'target': -99999.0,
+            'header': -99999.0,
+            'body': -99999.0,
+            'busy': False,
+            'pending': None,
+            'last_send': 0.0,
+        }
+        H_SYNC_MIN_INTERVAL = 0.12  # максимум ~8 программных прокруток в секунду
 
-        sheet = ft.Container(
-            content=sheet_content,
-            bgcolor=CARD,
-            border_radius=16,
-            shadow=shadow(18, 6, 0x40),
-            padding=16,
-            left=14, right=14, top=90,
-            visible=False)
+        def _attendance_view_is_current():
+            try:
+                return (
+                    int(getattr(self, '_view_generation', -1)) == attendance_generation
+                    and bool(self.stack)
+                    and self.stack[-1][0] == self.TABS[2]
+                )
+            except Exception:
+                return False
 
-        # ==================== Keyboard Safe ====================
-        def on_resize(e=None):
-            if ui['focus_emp'] is not None:
-                shown = visible_employees()
-                try:
-                    idx = next(i for i, x in enumerate(shown)
-                            if x['id'] == ui['focus_emp'])
-                except StopIteration:
-                    return
-                off = idx * (ROW_H + ROW_GAP)
-                try:
-                    nums_scroll.scroll_to(offset=off, duration=100)
-                    names_scroll.scroll_to(offset=off, duration=100)
-                except Exception:
-                    pass
+        async def _drain_horizontal_sync():
+            """Single-flight sync: coalesce many scroll events into the latest offset.
 
-        self._view_resize = on_resize
+            Flet's scroll_to is a client/server async operation. Sending a call for every
+            scroll event creates a backlog; if navigation removes the target control before
+            those replies arrive, Flet Web logs 'Control ID is not registered'.
+            """
+            if h_sync['busy']:
+                return
+            h_sync['busy'] = True
+            try:
+                while h_sync['pending'] is not None and _attendance_view_is_current():
+                    source, offset = h_sync['pending']
+                    h_sync['pending'] = None
+                    wait_for = H_SYNC_MIN_INTERVAL - (time.monotonic() - h_sync['last_send'])
+                    if wait_for > 0:
+                        await asyncio.sleep(wait_for)
+                    # During the throttle delay a newer event may arrive; always use it.
+                    if h_sync['pending'] is not None:
+                        source, offset = h_sync['pending']
+                        h_sync['pending'] = None
+                    if not _attendance_view_is_current():
+                        break
+                    source_key = 'header' if source == 'header' else 'body'
+                    if abs(offset - float(h_sync[source_key])) < 1.0:
+                        continue
+                    if abs(offset - float(h_sync['target'])) < 1.0:
+                        h_sync[source_key] = offset
+                        continue
+                    target = nums_hscroll if source == 'header' else header_nums_hscroll
+                    h_sync['target'] = offset
+                    h_sync['last_send'] = time.monotonic()
+                    # Use one in-flight client method at a time; skip work after navigation.
+                    await _await_if(target.scroll_to(offset=offset, duration=0))
+                    if not _attendance_view_is_current():
+                        break
+                    h_sync[source_key] = offset
+            except Exception:
+                # Connection close / control disposal during navigation is not fatal.
+                # Do not call update() on stale controls from this handler.
+                pass
+            finally:
+                h_sync['busy'] = False
+                # Event handlers can enqueue the newest offset while we were awaiting.
+                if h_sync['pending'] is not None and _attendance_view_is_current():
+                    try:
+                        self.page.run_task(_drain_horizontal_sync)
+                    except Exception:
+                        # On older Flet versions, a future scroll event will drain it.
+                        pass
 
-        # ==================== Return ====================
+        async def _sync_horizontal(source, event):
+            if not _attendance_view_is_current():
+                return
+            try:
+                offset = max(0.0, float(getattr(event, 'pixels', 0.0) or 0.0))
+            except Exception:
+                return
+            source_key = 'header' if source == 'header' else 'body'
+            # Ignore the echo event caused by our previous scroll_to() call.
+            # This prevents two scroll views from repeatedly triggering one another.
+            if abs(offset - float(h_sync['target'])) < 1.0:
+                h_sync[source_key] = offset
+                return
+            # Latest-wins queue prevents dozens of concurrent scroll_to invocations.
+            h_sync['pending'] = (source, offset)
+            if not h_sync['busy']:
+                await _drain_horizontal_sync()
+
+        async def on_header_horizontal_scroll(e):
+            await _sync_horizontal('header', e)
+
+        async def on_body_horizontal_scroll(e):
+            await _sync_horizontal('body', e)
+
+        header_nums_hscroll.on_scroll = on_header_horizontal_scroll
+        nums_hscroll.on_scroll = on_body_horizontal_scroll
+
+        table_header = ft.Row(
+            [name_header, header_nums_hscroll],
+            spacing=OUTER_GAP,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        table = ft.Column([table_header, body_scroll], spacing=4, expand=True)
+
+        # No resize-time vertical scroll_to calls: the names and value columns inherit
+        # the exact same scroll position from body_scroll by construction.
+        self._view_resize = lambda e=None: None
+
+        # ═══════════════════ Return ═══════════════════
         main = ft.Column([
             top_bar,
             ft.Divider(height=1, color=LINE),
@@ -5035,8 +5359,7 @@ class App:
             ft.Container(table, expand=True, padding=pad_sym(4, 8)),
         ], spacing=0, expand=True)
 
-        return ft.Stack([main, dimmer, sheet], expand=True)
-
+        return ft.Stack([main, dimmer, sheet], expand=True)   
     # ── حقوق ──
     def v_payroll(self):
         c = self.db.company_data(self.cid)
@@ -5239,7 +5562,7 @@ class App:
                                  net_salary=p['net_salary']))
             try:
                 path = os.path.join(export_dir(),
-                    f"payroll_list_{self.year}_{self.month:02d}.pdf")
+                    f"payroll_list_{self.year}_{self.month:02d}_{datetime.now():%Y%m%d_%H%M%S}.pdf")
                 build_payroll_list_pdf(path, c, self.year, self.month, rows)
                 self.file_dialog(path, "📋 لیست حقوق PDF ساخته شد")
             except Exception as ex:
@@ -5366,7 +5689,7 @@ class App:
                 pay_copy = dict(p)
                 pay_copy['loan_insts'] = loan_insts
                 path = build_pdf(os.path.join(export_dir(),
-                    f"payslip_{p['emp_id']}_{p['year']}_{p['month']:02d}.pdf"),
+                    f"payslip_{p['emp_id']}_{p['year']}_{p['month']:02d}_{datetime.now():%Y%m%d_%H%M%S}.pdf"),
                     c, [dict(pay=pay_copy, emp=e, dept=dept, details=dets)])
                 self.file_dialog(path, "📄 PDF ساخته شد", 1)
             except Exception as ex:
@@ -5602,7 +5925,7 @@ class App:
         def save(v):
             row = self.db.q1("SELECT admin_password FROM companies WHERE id=?", (self.cid,))
             if not check_pw(v['old'], row['admin_password']): return "رمز فعلی اشتباه است"
-            if len(v['new']) < 4: return "رمز جدید حداقل ۴ کاراکتر"
+            if len(v['new']) < 8: return "رمز جدید باید حداقل ۸ کاراکتر باشد"
             if v['new'] != v['confirm']: return "رمز و تکرار یکی نیست"
             self.db.x("UPDATE companies SET admin_password=? WHERE id=?", (hash_pw(v['new']), self.cid))
             self.toast("✅ رمز تغییر کرد"); return None
@@ -8258,29 +8581,8 @@ async def _app_capture_shot(self, shot, name):
 
 
 def _app_swipe_wrap(self, content):
-    """جابه‌جایی بین تب‌های اصلی با کشیدن انگشت (در حالت RTL: کشیدن به راست = تب بعدی)."""
-    G = getattr(ft, 'GestureDetector', None)
-    if G is None:
-        return content
-    st = {'dx': 0.0}
-    def start(e): st['dx'] = 0.0
-    def update(e):
-        d = getattr(e, 'primary_delta', None)
-        if d is None: d = getattr(e, 'delta_x', 0) or 0
-        st['dx'] += d
-    def end(e):
-        dx = st['dx']; st['dx'] = 0.0
-        v = getattr(e, 'primary_velocity', None) or 0
-        if len(self.stack) != 1 or self.navbar is None: return
-        if abs(dx) < 70 and abs(v) < 700: return
-        direction = dx if abs(dx) >= 70 else v
-        cur = int(self.navbar.selected_index or 0)
-        nxt = cur + (1 if direction > 0 else -1)
-        if 0 <= nxt < len(self.TABS):
-            self.go_root(nxt)
-    return K(G, content=content, on_horizontal_drag_start=start,
-             on_horizontal_drag_update=update, on_horizontal_drag_end=end,
-             expand=True, drag_interval=30)
+    """کشیدن انگشت بین تب‌ها غیرفعال است — محتوا بدون پوشش برمی‌گردد."""
+    return content
 
 
 def _app_debounce(self, key, fn, delay=0.25):
@@ -8365,6 +8667,9 @@ def _run_flet_web(port):
             if 'host' in ps: kw['host'] = '0.0.0.0'
             if 'port' in ps: kw['port'] = int(port)
             if 'name' in ps: kw['name'] = APP_TITLE
+            AV = getattr(ft, 'AppView', None)
+            web_view = getattr(AV, 'WEB_BROWSER', None) if AV is not None else None
+            if 'view' in ps and web_view is not None: kw['view'] = web_view
             if 'target' in ps:
                 kw['target'] = main
                 fn(**kw)
@@ -9219,10 +9524,663 @@ def main(page: ft.Page):
 
 App.v_payroll = _app_v_payroll
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ERFAN HESAB PRO — پایداری، سرعت، ذخیره‌سازی و دسترسی‌های سریع
+# این لایه روی هسته و پایگاه‌داده قبلی سوار می‌شود و ساختار دیتابیس را حفظ می‌کند.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_ATTENDANCE_UPSERT_SQL = """INSERT INTO attendances (
+    company_id, emp_id, year, month, work_days, overtime_hours, night_hours,
+    absent_hours, mission_days, shift_percent, friday_hours, holiday_hours,
+    overtime_minutes, night_minutes, absent_minutes, friday_rest_replaced,
+    holiday_rest_replaced, notes
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ON CONFLICT(company_id, emp_id, year, month) DO UPDATE SET
+    work_days=excluded.work_days,
+    overtime_hours=excluded.overtime_hours,
+    night_hours=excluded.night_hours,
+    absent_hours=excluded.absent_hours,
+    mission_days=excluded.mission_days,
+    shift_percent=excluded.shift_percent,
+    friday_hours=excluded.friday_hours,
+    holiday_hours=excluded.holiday_hours,
+    overtime_minutes=excluded.overtime_minutes,
+    night_minutes=excluded.night_minutes,
+    absent_minutes=excluded.absent_minutes,
+    friday_rest_replaced=excluded.friday_rest_replaced,
+    holiday_rest_replaced=excluded.holiday_rest_replaced,
+    notes=excluded.notes"""
+
+
+def _db_upsert_attendances(self, cid, records):
+    """ذخیره اتمیک و گروهی کارکرد؛ سریع‌تر و امن‌تر در برابر قطع برنامه."""
+    records = list(records or [])
+    if not records:
+        return 0
+    rows = []
+    for a in records:
+        rows.append((
+            cid, int(a['emp_id']), int(a['year']), int(a['month']),
+            max(0.0, _as_float(a.get('work_days'))),
+            max(0.0, _as_float(a.get('overtime_hours'))),
+            max(0.0, _as_float(a.get('night_hours'))),
+            max(0.0, _as_float(a.get('absent_hours'))),
+            max(0.0, _as_float(a.get('mission_days'))),
+            max(0.0, _as_float(a.get('shift_percent'))),
+            max(0.0, _as_float(a.get('friday_hours'))),
+            max(0.0, _as_float(a.get('holiday_hours'))),
+            max(0, int(_as_float(a.get('overtime_minutes')))),
+            max(0, int(_as_float(a.get('night_minutes')))),
+            max(0, int(_as_float(a.get('absent_minutes')))),
+            int(bool(a.get('friday_rest_replaced'))),
+            int(bool(a.get('holiday_rest_replaced'))),
+            str(a.get('notes') or '')
+        ))
+    with self.tx() as conn:
+        conn.executemany(_ATTENDANCE_UPSERT_SQL, rows)
+    return len(rows)
+
+
+Database.upsert_attendances = _db_upsert_attendances
+
+
+def _validated_save_loan(self, cid, emp_id, principal, count, sy, sm, purpose=''):
+    principal, count, sy, sm = int(principal), int(count), int(sy), int(sm)
+    if principal <= 0:
+        raise ValueError('مبلغ وام باید بیشتر از صفر باشد.')
+    if not 1 <= count <= 600:
+        raise ValueError('تعداد اقساط باید بین ۱ تا ۶۰۰ باشد.')
+    if not 1300 <= sy <= 1500 or not 1 <= sm <= 12:
+        raise ValueError('تاریخ شروع اقساط معتبر نیست.')
+    if not self.q1('SELECT id FROM employees WHERE id=? AND company_id=?', (emp_id, cid)):
+        raise ValueError('پرسنل انتخاب‌شده معتبر نیست.')
+    return _DB_SAVE_LOAN_ORIGINAL(self, cid, emp_id, principal, count, sy, sm, purpose)
+
+
+_DB_SAVE_LOAN_ORIGINAL = Database.save_loan
+Database.save_loan = _validated_save_loan
+
+
+def _human_bytes(size):
+    try:
+        n = float(size)
+    except Exception:
+        return '۰ بایت'
+    for unit in ('بایت', 'کیلوبایت', 'مگابایت', 'گیگابایت', 'ترابایت'):
+        if n < 1024 or unit == 'ترابایت':
+            if unit == 'بایت':
+                return f'{int(n):,} {unit}'
+            return f'{n:.1f} {unit}'
+        n /= 1024.0
+    return f'{n:.1f} گیگابایت'
+
+
+def _export_files_summary(directory=None):
+    directory = directory or export_dir()
+    os.makedirs(directory, exist_ok=True)
+    files = []
+    total = 0
+    for name in os.listdir(directory):
+        path = os.path.join(directory, name)
+        try:
+            if not os.path.isfile(path):
+                continue
+            st = os.stat(path)
+            item = {'name': name, 'path': path, 'size': st.st_size,
+                    'mtime': st.st_mtime, 'ext': os.path.splitext(name)[1].lower()}
+            files.append(item)
+            total += st.st_size
+        except OSError:
+            continue
+    files.sort(key=lambda x: x['mtime'], reverse=True)
+    return files, total
+
+
+def _app_v_storage(self):
+    """مدیریت خروجی‌های چاپ و گزارش با امکان اشتراک، حذف و پاک‌سازی امن."""
+    state = {'q': ''}
+    body = ft.Column(spacing=6, expand=True, scroll=ft.ScrollMode.AUTO)
+    search = tf('جستجوی فایل‌ها...', '', prefix=_ic('SEARCH'), size=12,
+                on_change=lambda e: (state.update({'q': e.control.value or ''}),
+                                     self.debounce('files_q', render_list)))
+    summary = ft.Container()
+    listing = ft.Column(spacing=5)
+
+    def open_one(path, ev=None):
+        if os.path.isfile(path):
+            self.file_dialog(path, 'فایل ذخیره‌شده')
+        else:
+            self.toast('این فایل دیگر وجود ندارد.', True)
+
+    def remove_one(path, ev=None):
+        name = os.path.basename(path)
+        if os.path.splitext(name)[1].lower() == '.db' or name.endswith('.before_restore'):
+            self.toast('حذف فایل پشتیبان از این بخش غیرفعال است تا نسخه پشتیبان تصادفی از بین نرود.', True)
+            return
+        def go():
+            try:
+                os.remove(path)
+                self.toast(f'فایل «{name}» حذف شد.')
+                render_list()
+            except Exception as ex:
+                self.toast(f'حذف فایل انجام نشد: {ex}', True)
+        self.confirm(f'فایل «{name}» حذف شود؟ این کار قابل بازگشت نیست.', go, 'حذف فایل')
+
+    def clean_old(ev=None):
+        files, _ = _export_files_summary()
+        cutoff = time.time() - 30 * 86400
+        eligible = [f for f in files if f['mtime'] < cutoff and f['ext'] in ('.pdf', '.png', '.csv')]
+        if not eligible:
+            self.toast('فایل PDF، تصویر یا CSV قدیمی‌تر از ۳۰ روز پیدا نشد.')
+            return
+        def go():
+            deleted = freed = 0
+            errors = 0
+            for f in eligible:
+                try:
+                    os.remove(f['path'])
+                    deleted += 1
+                    freed += f['size']
+                except OSError:
+                    errors += 1
+            self.toast(f'{deleted} فایل حذف شد؛ { _human_bytes(freed) } فضا آزاد شد.' +
+                       (f' {errors} فایل حذف نشد.' if errors else ''))
+            render_list()
+        self.confirm(f'{len(eligible)} خروجی چاپی/گزارشی قدیمی‌تر از ۳۰ روز حذف شود؟\n\nفایل‌های پشتیبان دیتابیس حذف نمی‌شوند.',
+                     go, 'پاک‌سازی فضای ذخیره‌سازی')
+
+    def render_list():
+        files, total = _export_files_summary()
+        q = (state['q'] or '').strip().casefold()
+        if q:
+            files = [f for f in files if q in f['name'].casefold()]
+        shown = files[:100]
+        summary.content = card(ft.Column([
+            ft.Row([
+                ft.Column([txt('فایل‌های ذخیره‌شده', 11, color=T()['muted']),
+                           txt(f'{len(files):,}', 18, True, T()['primary'])], spacing=1, expand=True),
+                ft.Column([txt('حجم پوشه خروجی', 11, color=T()['muted']),
+                           txt(_human_bytes(total), 15, True, T()['success'])], spacing=1),
+            ], spacing=8),
+            txt(export_dir(), 9, color=T()['muted'], selectable=True),
+        ], spacing=6), padding=10)
+        listing.controls.clear()
+        if not shown:
+            listing.controls.append(card(ft.Column([
+                ft.Icon(_ic('FOLDER_OPEN'), size=30, color=T()['muted']),
+                txt('فایلی با این جستجو پیدا نشد.', 12, color=T()['muted'])
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=6), padding=18))
+        for item in shown:
+            pth = item['path']
+            when = datetime.fromtimestamp(item['mtime']).strftime('%Y/%m/%d  %H:%M')
+            ext = item['ext'].upper().lstrip('.') or 'FILE'
+            ico = {'PDF': 'PICTURE_AS_PDF', 'PNG': 'IMAGE', 'CSV': 'TABLE_CHART', 'DB': 'STORAGE'}.get(ext, 'INSERT_DRIVE_FILE')
+            listing.controls.append(card(ft.Row([
+                ft.Container(ft.Icon(_ic(ico), size=22, color=T()['primary']),
+                             width=38, height=38, bgcolor=alpha(T()['primary'], 0x12),
+                             border_radius=10, alignment=center()),
+                ft.Column([
+                    txt(item['name'], 11, True, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                    txt(f'{_human_bytes(item["size"])}  •  {when}', 9, color=T()['muted']),
+                ], spacing=2, expand=True),
+                iconbtn(_ic('OPEN_IN_NEW'), lambda e, p=pth: open_one(p, e), T()['success'], 18, 'بازکردن/چاپ/اشتراک'),
+                iconbtn(_ic('DELETE_OUTLINE', 'DELETE'), lambda e, p=pth: remove_one(p, e), T()['danger'], 18, 'حذف فایل'),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER), padding=8))
+        if len(files) > 100:
+            listing.controls.append(txt(f'برای سرعت، ۱۰۰ فایل جدید نمایش داده شد؛ با جستجو فایل قدیمی‌تر را پیدا کنید. (کل نتایج: {len(files)})',
+                                        10, color=T()['muted']))
+        try:
+            summary.update()
+            listing.update()
+        except Exception:
+            pass
+
+    render_list()
+    return ft.Column([
+        card(ft.Column([
+            ft.Row([txt('مرکز فایل‌ها', 14, True, expand=True),
+                    iconbtn(_ic('REFRESH'), lambda e: render_list(), T()['primary'], 20, 'به‌روزرسانی')]),
+            txt('PDF فیش‌ها و قراردادها، تصاویر فیش، فایل‌های CSV و پشتیبان‌ها از اینجا قابل مدیریت‌اند.',
+                10, color=T()['muted']),
+            search,
+            ft.Row([
+                gbtn('پاک‌سازی خروجی‌های بالای ۳۰ روز', _ic('DELETE_SWEEP'), clean_old,
+                     T()['danger'], expand=True, height=36),
+            ]),
+        ], spacing=8), padding=10),
+        summary,
+        listing,
+    ], spacing=6, expand=True, scroll=ft.ScrollMode.AUTO)
+
+
+App.v_storage = _app_v_storage
+
+# اضافه‌کردن مرکز فایل‌ها بدون حذف امکانات موجود در تب «بیشتر».
+_APP_V_MORE_ORIGINAL = App.v_more
+
+def _app_v_more_with_storage(self):
+    view = _APP_V_MORE_ORIGINAL(self)
+    try:
+        items = list(getattr(view, 'controls', []) or [])
+        shortcut = card(ft.Row([
+            ft.Container(ft.Icon(_ic('FOLDER_COPY'), color=T()['primary'], size=18),
+                         bgcolor=T()['accent'], width=38, height=38,
+                         border_radius=19, alignment=center()),
+            ft.Column([txt('مرکز فایل‌ها و چاپ', 12, True),
+                       txt('پیش‌نمایش، اشتراک‌گذاری، مدیریت و آزادسازی فضا', 10, color=T()['muted'])],
+                      spacing=0, expand=True),
+            ft.Icon(_ic('CHEVRON_LEFT'), color=T()['muted'], size=16),
+        ], spacing=10), padding=10, on_click=lambda e: self.push('مرکز فایل‌ها و چاپ', self.v_storage))
+        items.insert(max(0, len(items) - 1), shortcut)
+        view.controls = items
+    except Exception:
+        log_error(traceback.format_exc())
+    return view
+
+App.v_more = _app_v_more_with_storage
+
+
+# ── مسیر فایل محلی: پیش‌نمایش واقعی PDF و پشتیبانی از Range برای PDF Viewer اندروید ──
+_FILE_META = {}
+
+def _filehandler_get(self):
+    try:
+        raw_path = self.path.split('?', 1)[0]
+        parts = urllib.parse.unquote(raw_path).split('/')
+        token = parts[2] if len(parts) > 2 else ''
+        path = _FILE_REG.get(token)
+        if not path or not os.path.isfile(path):
+            self.send_error(404)
+            return
+        size = os.path.getsize(path)
+        ctype = mimetypes.guess_type(path)[0] or 'application/octet-stream'
+        display_inline = ctype.startswith('image/') or ctype == 'application/pdf'
+        filename = urllib.parse.quote(os.path.basename(path))
+        start, end = 0, max(0, size - 1)
+        status_code = 200
+        header_range = self.headers.get('Range', '')
+        if header_range.startswith('bytes=') and size:
+            try:
+                chunk = header_range[6:].split(',', 1)[0].strip()
+                a, b = (chunk.split('-', 1) + [''])[:2]
+                if a == '':
+                    length = int(b)
+                    start = max(0, size - length)
+                else:
+                    start = int(a)
+                if b and a:
+                    end = min(size - 1, int(b))
+                else:
+                    end = size - 1
+                if start < 0 or start >= size or end < start:
+                    raise ValueError('range')
+                status_code = 206
+            except Exception:
+                self.send_response(416)
+                self.send_header('Content-Range', f'bytes */{size}')
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+        length = max(0, end - start + 1) if size else 0
+        self.send_response(status_code)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(length))
+        self.send_header('Content-Disposition',
+                         ('inline' if display_inline else 'attachment') + "; filename*=UTF-8''" + filename)
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Cache-Control', 'no-store, max-age=0')
+        if status_code == 206:
+            self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+        self.end_headers()
+        if length:
+            with open(path, 'rb') as handle:
+                handle.seek(start)
+                remaining = length
+                while remaining:
+                    chunk = handle.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    except Exception:
+        log_error('File preview endpoint failed:\n' + traceback.format_exc())
+
+_FileHandler.do_GET = _filehandler_get
+
+_FILE_URL_ORIGINAL = _file_url
+
+def _enhanced_file_url(path):
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    now = time.time()
+    for tok, stamp in list(_FILE_META.items()):
+        if now - stamp > 24 * 3600 or len(_FILE_META) > 160:
+            _FILE_META.pop(tok, None)
+            _FILE_REG.pop(tok, None)
+    if _FILE_SRV['srv'] is None:
+        srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), _FileHandler)
+        srv.daemon_threads = True
+        threading.Thread(target=srv.serve_forever, name='ErfanHesab-FilePreview', daemon=True).start()
+        _FILE_SRV['srv'] = srv
+        _FILE_SRV['port'] = srv.server_address[1]
+    token = secrets.token_urlsafe(18)
+    _FILE_REG[token] = os.path.abspath(path)
+    _FILE_META[token] = now
+    return f"http://127.0.0.1:{_FILE_SRV['port']}/f/{token}/{urllib.parse.quote(os.path.basename(path))}"
+
+_file_url = _enhanced_file_url
+
+
+# ── شبکه محلی: تشخیص IP واقعی، بررسی HTTP و مدیریت درست کلید روشن/خاموش ──
+def _enhanced_lan_ips():
+    ips = []
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # اتصال UDP فقط برای تشخیص IP مسیر خروجی است؛ بسته‌ای به مقصد ارسال نمی‌شود.
+            sock.connect(('192.0.2.1', 9))
+            ip = sock.getsockname()[0]
+            if ip and not ip.startswith('127.') and ip != '0.0.0.0':
+                ips.append(ip)
+        finally:
+            sock.close()
+    except Exception:
+        pass
+    try:
+        for row in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = row[4][0]
+            if ip and not ip.startswith('127.') and ip != '0.0.0.0' and ip not in ips:
+                ips.append(ip)
+    except Exception:
+        pass
+    return ips
+
+
+def _http_probe(port, path='/'):
+    try:
+        conn = http.client.HTTPConnection('127.0.0.1', int(port), timeout=0.8)
+        conn.request('GET', path, headers={'Connection': 'close'})
+        res = conn.getresponse()
+        res.read(256)
+        code = int(res.status)
+        conn.close()
+        return 200 <= code < 500
+    except Exception:
+        return False
+
+
+_lan_ips = _enhanced_lan_ips
+
+_WEB_SHARE_START_ORIGINAL = web_share_start
+_WEB_SHARE_STOP_ORIGINAL = web_share_stop
+
+def _enhanced_web_share_start(port):
+    try:
+        port = int(norm(port))
+    except Exception:
+        return False, 'شماره پورت معتبر نیست.'
+    if not 1024 <= port <= 65535:
+        return False, 'پورت باید بین ۱۰۲۴ تا ۶۵۵۳۵ باشد.'
+
+    if _is_android():
+        old_thread = WEB.get('thread')
+        old_port = int(WEB.get('port') or 0)
+        if old_thread is not None and old_thread.is_alive():
+            if old_port != port:
+                return False, (f'سرویس قبلی هنوز در پورت {old_port} اجراست. '
+                               'برای تغییر پورت، برنامه را کاملاً ببندید و دوباره باز کنید.')
+            if _http_probe(port) or _port_open(port):
+                WEB['blocked'] = False
+                return True, ''
+            return False, 'ریسمان سرویس وب فعال است اما پاسخ HTTP دریافت نشد؛ برنامه را دوباره اجرا کنید.'
+        if _port_open(port):
+            return False, f'پورت {port} توسط برنامه دیگری استفاده می‌شود؛ پورت دیگری انتخاب کنید.'
+        WEB['blocked'] = False
+        WEB['port'] = port
+        th = threading.Thread(target=_thread_web, args=(port,), name='ErfanHesab-Web', daemon=True)
+        WEB['thread'] = th
+        WEB['mode'] = 'thread'
+        th.start()
+        for _ in range(48):
+            if not th.is_alive():
+                WEB['blocked'] = True
+                return False, ('سرویس وب در اندروید اجرا نشد. اجرای وب‌سرور دوم به پشتیبانی نسخه Flet/کلاینت نصب‌شده وابسته است. '
+                               'گزارش خطا در پوشه برنامه و فایل error.log ثبت شده است.')
+            if _http_probe(port):
+                return True, ''
+            time.sleep(0.25)
+        WEB['blocked'] = True
+        return False, (f'در پورت {port} پاسخ HTTP دریافت نشد. '
+                       'برای اجرای مطمئن نسخه مرورگری، همین فایل را با فرمان «flet run --web --host 0.0.0.0 --port '
+                       f'{port} erfanhesab_pro.py» از رایانه اجرا کنید.')
+
+    # Desktop: reuse if same server is already on requested port; restart for a changed port.
+    if web_share_active():
+        if int(WEB.get('port') or 0) == port:
+            return True, ''
+        _WEB_SHARE_STOP_ORIGINAL()
+    return _WEB_SHARE_START_ORIGINAL(port)
+
+
+web_share_start = _enhanced_web_share_start
+
+
+def _enhanced_web_share_stop():
+    if _is_android():
+        # Flet's API does not expose the server handle for a second in-process app.
+        # block new web sessions; to release the listener completely, fully close the Android app.
+        WEB['blocked'] = True
+        return
+    _WEB_SHARE_STOP_ORIGINAL()
+
+
+web_share_stop = _enhanced_web_share_stop
+
+
+def _app_v_webshare_pro(self):
+    page_is_web = bool(getattr(self.page, 'web', False))
+    port_f = tf('پورت سرویس', WEB.get('port', 8550), kb=True, width=125,
+                hint='مثلاً 8550')
+    status = txt('', 11, True)
+    info = ft.Column(spacing=6)
+    local_card = ft.Container(content=ft.Column(), padding=10, bgcolor=T()['card'],
+                              border=border_all(1, T()['line']), border_radius=12)
+
+    async def _local_copy(ev):
+        u = f"http://127.0.0.1:{WEB.get('port', 8550)}/"
+        ok = await _copy_text(self.page, u)
+        self.toast('آدرس کپی شد' if ok else 'کپی آدرس ممکن نشد', not ok)
+
+    def refresh_info():
+        info.controls.clear()
+        local_card.content = ft.Column([
+            txt('آدرس لوکال‌هاست این دستگاه', 11, True, T()['primary']),
+            ft.Row([
+                txt(f"http://127.0.0.1:{WEB.get('port', 8550)}/", 13, True,
+                    T()['primary'], expand=True, selectable=True),
+                iconbtn(_ic('CONTENT_COPY'),
+                        _local_copy,
+                        T()['accent'], 18, 'کپی آدرس لوکال')
+            ], spacing=5),
+            txt('این آدرس فقط روی همان گوشی/رایانه باز می‌شود؛ سرویس باید روشن باشد.',
+                9, color=T()['muted']),
+        ], spacing=5)
+        if web_share_active():
+            status.value = f"🟢 فعال روی پورت {WEB.get('port', 8550)}"
+            status.color = T()['success']
+            ips = _lan_ips()
+            if ips:
+                info.controls.append(txt('آدرس‌های شبکه محلی برای دستگاه‌های دیگر', 11, True))
+                for ip in ips:
+                    url = f"http://{ip}:{WEB['port']}/"
+                    async def cp(ev, u=url):
+                        ok = await _copy_text(self.page, u)
+                        self.toast('آدرس شبکه کپی شد' if ok else 'کپی آدرس ممکن نشد', not ok)
+                    info.controls.append(card(ft.Row([
+                        txt(url, 12, True, T()['primary'], expand=True, selectable=True),
+                        iconbtn(_ic('CONTENT_COPY'), cp, T()['accent'], 18, 'کپی آدرس')
+                    ], spacing=6), padding=8))
+            else:
+                info.controls.append(txt('IP شبکه تشخیص داده نشد؛ آدرس 127.0.0.1 فقط روی همین دستگاه معتبر است.',
+                                         10, color=T()['warning']))
+        else:
+            status.value = '⚪ سرویس اشتراک خاموش است'
+            status.color = T()['muted']
+            info.controls.append(txt('پس از روشن‌کردن سرویس، آدرس‌های شبکه در همین بخش ظاهر می‌شوند.',
+                                     10, color=T()['muted']))
+        try:
+            local_card.update()
+            info.update()
+            status.update()
+        except Exception:
+            pass
+
+    def on_toggle(e):
+        if e.control.value:
+            wanted = port_f.value or WEB.get('port', 8550)
+            ok, msg = web_share_start(wanted)
+            if not ok:
+                e.control.value = False
+                try: e.control.update()
+                except Exception: pass
+                self.info('راه‌اندازی لوکال‌هاست', msg)
+        else:
+            web_share_stop()
+            if _is_android():
+                self.toast('ورود نشست‌های وب جدید مسدود شد. برای آزادکردن کامل پورت، برنامه اندروید را ببندید.')
+            else:
+                self.toast('سرویس اشتراک‌گذاری متوقف شد.')
+        refresh_info()
+
+    sw = K(ft.Switch, label='روشن‌کردن سرویس وب', value=web_share_active(),
+           active_color=T()['accent'], on_change=on_toggle)
+    refresh_info()
+    notes = [
+        '• آدرس 127.0.0.1 فقط روی همان دستگاه کار می‌کند؛ برای دستگاه دیگر از IP شبکه استفاده کنید.',
+        '• دستگاه‌های دیگر باید به همان Wi-Fi وصل باشند و فایروال رایانه اجازه دسترسی به پورت را بدهد.',
+        '• این سرویس HTTP رمزگذاری‌نشده است؛ فقط در شبکه مورد اعتماد و برای افراد مورد اعتماد فعالش کنید.',
+        '• با توقف در نسخه دسکتاپ، فرایند وب بسته می‌شود. نسخه اندروید ممکن است تا بسته‌شدن کامل برنامه پورت را نگه دارد.',
+    ]
+    if page_is_web:
+        notes.insert(0, 'شما همین حالا داخل نسخه مرورگری هستید؛ آدرس بازشده فعلی، آدرس دسترسی شماست.')
+    return ft.ListView([
+        card(ft.Column([
+            txt('🌐 لوکال‌هاست و اشتراک شبکه', 14, True),
+            ft.Row([sw, port_f], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            status,
+        ], spacing=8), padding=12),
+        local_card,
+        info,
+        card(ft.Column([txt(n, 10, color=T()['muted']) for n in notes], spacing=5), padding=10),
+    ], spacing=8, expand=True, padding=pad_only(bottom=20))
+
+
+# Clipboard helper that works with synchronous and asynchronous API generations.
+def _copy_text_sync(page, value):
+    try:
+        fn = getattr(page, 'set_clipboard', None)
+        if callable(fn):
+            result = fn(value)
+            if inspect.isawaitable(result):
+                try:
+                    loop = getattr(page, 'loop', None)
+                    if loop and loop.is_running():
+                        loop.call_soon_threadsafe(lambda: None)
+                        return False
+                except Exception:
+                    pass
+                return False
+            return True
+        return False
+    except Exception:
+        return False
+
+App.v_webshare = _app_v_webshare_pro
+
+
+# UI operations started by the debounce timer are marshalled back to Flet's event loop where possible.
+def _enhanced_debounce(self, key, fn, delay=0.22):
+    timers = self.__dict__.setdefault('_timers', {})
+    old = timers.get(key)
+    if old:
+        try: old.cancel()
+        except Exception: pass
+    def dispatch():
+        try:
+            async def run_on_ui():
+                try:
+                    fn()
+                except Exception:
+                    log_error(traceback.format_exc())
+            runner = getattr(self.page, 'run_task', None)
+            if callable(runner):
+                runner(run_on_ui)
+            else:
+                fn()
+        except Exception:
+            log_error(traceback.format_exc())
+            try: fn()
+            except Exception: log_error(traceback.format_exc())
+    timer = threading.Timer(max(0.05, float(delay)), dispatch)
+    timer.daemon = True
+    timers[key] = timer
+    timer.start()
+
+App.debounce = _enhanced_debounce
+
+
+# Clock cleanup on logout prevents updates targeting detached controls.
+_APP_SHOW_LOGIN_ORIGINAL = App.show_login
+
+def _app_show_login_cleanup(self):
+    self._clock_stop = True
+    timer = getattr(self, '_clock_timer', None)
+    if timer is not None:
+        try: timer.cancel()
+        except Exception: pass
+    self._clock_timer = None
+    return _APP_SHOW_LOGIN_ORIGINAL(self)
+
+App.show_login = _app_show_login_cleanup
+
+
+
+# دسترسی سریع به مدیریت PDF/CSV از داشبورد اصلی نیز در دسترس باشد.
+_APP_V_DASHBOARD_ORIGINAL = App.v_dashboard
+
+def _app_v_dashboard_pro(self):
+    view = _APP_V_DASHBOARD_ORIGINAL(self)
+    try:
+        for item in list(getattr(view, 'controls', []) or []):
+            container = getattr(item, 'content', None)
+            controls = list(getattr(container, 'controls', []) or [])
+            if not controls:
+                continue
+            first = controls[0]
+            if getattr(first, 'value', '') == '⚡ اقدامات سریع':
+                container.controls.append(wide(lambda: gbtn(
+                    'مرکز فایل‌ها و چاپ', _ic('FOLDER_COPY'),
+                    lambda e: self.push('مرکز فایل‌ها و چاپ', self.v_storage),
+                    T()['primary'], expand=True)))
+                break
+    except Exception:
+        log_error(traceback.format_exc())
+    return view
+
+App.v_dashboard = _app_v_dashboard_pro
+
+# Main entrypoint must stay after every override above.
 if __name__ == "__main__":
     if '--web-share' in sys.argv:
-        try: _port = int(sys.argv[sys.argv.index('--web-share') + 1])
-        except Exception: _port = 8550
+        try:
+            _port = int(sys.argv[sys.argv.index('--web-share') + 1])
+        except Exception:
+            _port = 8550
         _run_flet_web(_port)
     else:
         _safe_ft_run(main)
