@@ -1,17 +1,19 @@
 [project]
-name = "erfanhesab"
-version = "6.1.0"
-description = "Comprehensive Payroll Management System"
+name = "erfan-hesab"
+version = "1.0.0"
+description = "Erfan Hesab - Payroll and Timesheet Management"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
-authors = [{ name = "Erfan Baloch" }]
+authors = [
+    { name = "Erfan Baloch" }
+]
 license = { text = "Proprietary" }
 dependencies = [
     "flet==0.28.3",
+    "fpdf2>=2.7.9",
     "arabic-reshaper>=3.0.0",
     "python-bidi>=0.4.2",
-    "fpdf2>=2.7.9",
-    "Pillow>=10.4.0",
+    "pillow>=10.4.0",
 ]
 
 [build-system]
@@ -19,10 +21,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.flet]
-org = "ir.erfanhesab"
-product = "ErfanHesab"
-company = "Erfan Baloch"
-copyright = "(c) 1405 Erfan Baloch"
+product = "Erfan Hesab"
+org = "ir.erfan"
+company = "Erfan"
 build_number = 1
 icon = "assets/icon.png"
 
@@ -30,7 +31,7 @@ icon = "assets/icon.png"
 path = "."
 
 [tool.flet.android]
-package = "ir.erfanhesab.payroll"
+package = "ir.erfan.erfanhesab"
 min_sdk_version = 21
 target_sdk_version = 34
 
