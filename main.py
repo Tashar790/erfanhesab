@@ -440,7 +440,7 @@ def cleanup_exports(days=30, keep_backups=10):
     d = export_dir()
     try:
         for p in glob.glob(os.path.join(d, '*')):
-            if not os.path.isfile(p) or os.path.basename(p).startswith('backup_'):
+            if not os.path.isfile(p) or p.lower().endswith('.db'):
                 continue
             if os.path.getmtime(p) < cut:
                 freed += os.path.getsize(p); os.remove(p); n += 1
@@ -684,7 +684,7 @@ DEFAULT_CONTRACT = """قرارداد کار
 طبق ماده ۵۱ قانون کار، ۴۴ ساعت در هفته. از {{work_start}} تا {{work_end}}.
 
 ماده ۵ — حقوق و مزایا:
-حقوق روزانه {{daily_salary}} ریال معادل ماهانه {{monthly_salary}} ریال، به‌علاوه مزایای قانونی.
+حقوق روزانه {{daily_salary}} ریال معادل ماهانه {{monthly_salary}} ریال، به‌علاوه مزایای قانونی.{{extra_pay_line}}
 
 ماده ۶ — بیمه:
 کارگر از بدو اشتغال تحت پوشش تأمین اجتماعی قرار می‌گیرد. شماره بیمه: {{insurance_number}}.
@@ -1811,6 +1811,7 @@ class Contract:
 #S حقوق و مزایا
 #TBL
 حقوق روزانه|{{daily_salary}} ریال|حقوق ماهانه|{{monthly_salary}} ریال
+حق جذب|{{absorb_text}}|حق مسئولیت|{{resp_text}}
 ساعت کار هفتگی|۴۴ ساعت طبق ماده ۵۱|ساعت کار روزانه|{{work_start}} تا {{work_end}}
 #/TBL
 
@@ -1827,7 +1828,7 @@ class Contract:
 #P طبق ماده ۵۱ قانون کار، ۴۴ ساعت در هفته؛ از ساعت {{work_start}} تا {{work_end}}.
 
 #A ماده ۵ — حقوق و مزایا
-#P حقوق روزانه {{daily_salary}} ریال معادل ماهانه {{monthly_salary}} ریال، به‌علاوه مزایای قانونی (حق مسکن، بن کارگری، حق تاهل، حق اولاد و ...).
+#P حقوق روزانه {{daily_salary}} ریال معادل ماهانه {{monthly_salary}} ریال، به‌علاوه مزایای قانونی (حق مسکن، بن کارگری، حق تاهل، حق اولاد و ...).{{extra_pay_line}}
 
 #A ماده ۶ — بیمه
 #P کارگر از بدو اشتغال تحت پوشش سازمان تأمین اجتماعی قرار می‌گیرد. شماره بیمه: {{insurance_number}}.
@@ -2004,7 +2005,7 @@ class Contract:
                 return default
             return v
 
-        return {
+        _ctx = {
             'company_name':       g(c, 'name', APP_TITLE),
             'company_reg':        g(c, 'reg_no'),
             'company_economic':   g(c, 'economic_code'),
@@ -2035,6 +2036,8 @@ class Contract:
             'insurance_number':   g(e, 'insurance_number'),
             'tax_file_code':      g(e, 'tax_file_code'),
         }
+        _ctx.update(extra_pay_tokens(e))
+        return _ctx
 
     def _render_text(self, template):
         """جایگزینی متغیرها در متن قالب."""
@@ -2087,6 +2090,7 @@ class Contract:
             'insurance_number': g(e, 'insurance_number'),
             'tax_file_code':  g(e, 'tax_file_code'),
         }
+        ctx.update(extra_pay_tokens(e))
         out = template or cls.DEFAULT_TEMPLATE
         for k, v in ctx.items():
             out = out.replace("{{" + k + "}}", str(v))
@@ -3771,7 +3775,7 @@ class App:
             ft.Row([qtile(_ic("WIFI"), "وب‌اپ تردد", '#0891b2',
                           lambda e: self.push("اشتراک نسخه وب", self.v_webshare)),
                     qtile(_ic("BACKUP"), "پشتیبان و فایل‌ها", '#64748b',
-                          lambda e: self.push("پشتیبان", self.v_backup)),
+                          lambda e: self.push("فایل‌ها و پشتیبان", self.v_files)),
                     qtile(_ic("SETTINGS"), "تنظیمات", T()['primary_dark'],
                           lambda e: self.push("تنظیمات", self.v_settings))], spacing=6),
         ], spacing=8))
@@ -3981,6 +3985,16 @@ class App:
 
         add_switch('marital', 'متاهل')
         add_int('child_count', 'تعداد فرزند')
+        add_dd('ts_rest_day', 'روز تعطیل هفتگی این فرد',
+               [('', 'پیش‌فرض شرکت')] + [(str(_i), TS_WEEKDAYS[_i]) for _i in range(7)])
+
+        _pol_e = ts_policy(self.db, self.cid, self.year)
+        _ml = {'fixed': 'ریال در ماه', 'percent': 'درصد مزد پایه', 'daily': 'ریال برای هر روز کارکرد'}
+        add_text('absorb_value', f"حق جذب ({_ml[_pol_e['absorb_mode']]}) — خالی = ندارد", kb=True)
+        add_text('resp_value', f"حق مسئولیت ({_ml[_pol_e['resp_mode']]}) — خالی = ندارد", kb=True)
+        add_dd('ts_basis', 'مبنای روز کارکرد',
+               [('', 'پیش‌فرض تنظیمات'), ('recorded', 'فقط روزهای ثبت‌شده (روزمزد)'), ('monthly', 'کل ماه (ماهانه‌بگیر)')])
+        add_text('leave_carry', 'مانده مرخصی از سال قبل (روز)', kb=True)
 
         add_text('mobile', 'تلفن همراه', kb=True)
         add_text('phone', 'تلفن ثابت', kb=True)
@@ -4006,7 +4020,7 @@ class App:
                     'account_number', 'iban', 'bank_name', 'tax_file_code', 'notes']
         INT_KEYS = ['daily_salary', 'child_count']
         BOOL_KEYS = ['marital', 'is_active', 'insurance_exempt', 'tax_exempt']
-        DD_KEYS = ['contract_type', 'education', 'shift_pattern']
+        DD_KEYS = ['contract_type', 'education', 'shift_pattern', 'ts_basis', 'ts_rest_day']
         DATE_KEYS = ['employment_date', 'birth_date', 'contract_end']
 
         def collect():
@@ -4023,6 +4037,9 @@ class App:
             for k in DD_KEYS:
                 if k in ctrls:
                     out[k] = ctrls[k].value or ''
+            for k in ('absorb_value', 'resp_value', 'leave_carry'):
+                if k in ctrls:
+                    out[k] = parse_float(ctrls[k].value or '0')
             if 'dept_id' in ctrls:
                 v = ctrls['dept_id'].value
                 try:
@@ -4166,6 +4183,9 @@ class App:
                 ('insurance_number', 'tax_file_code'),
                 ('insurance_exempt',),
                 ('tax_exempt',),
+                ('absorb_value', 'resp_value'),
+                ('ts_basis', 'leave_carry'),
+                ('ts_rest_day',),
             ], initially_open=True),
 
             make_section('👨‍👩‍👧 وضعیت خانوادگی', T()['purple'], [
@@ -4502,7 +4522,7 @@ class App:
         FIELDS = ('work_days', 'overtime_hours', 'overtime_minutes', 'night_hours',
                   'night_minutes', 'absent_hours', 'absent_minutes', 'mission_days',
                   'shift_percent', 'friday_hours', 'friday_replaced_hours',
-                  'holiday_hours', 'holiday_ot_hours')
+                  'holiday_hours', 'holiday_ot_hours', 'absent_days')
         EXTRA_ROWS = [
             [('overtime_hours', 'اضافه‌کاری (ساعت)'), ('overtime_minutes', 'دقیقه')],
             [('night_hours', 'شب‌کاری (ساعت)'), ('night_minutes', 'دقیقه')],
@@ -4510,6 +4530,7 @@ class App:
             [('mission_days', 'مأموریت (روز)'), ('shift_percent', 'نوبت‌کاری %')],
             [('friday_hours', 'جمعه‌کاری بدون جایگزین (ساعت)'), ('friday_replaced_hours', 'جمعه‌کاری با جایگزین (ساعت)')],
             [('holiday_hours', 'تعطیل‌کاری رسمی (ساعت)'), ('holiday_ot_hours', 'اضافه‌کاری در تعطیل (ساعت)')],
+            [('absent_days', 'غیبت (روز)')],
         ]
 
         def fmt_v(v):
@@ -5359,6 +5380,7 @@ class App:
             'work_end': c.get('default_work_end', '16:00'),
             'today': jalali_today_str(),
         }
+        vars_map.update(extra_pay_tokens(emp))
         preview = template
         for k, v in vars_map.items(): preview = preview.replace("{{" + k + "}}", str(v))
         editor = tf("متن قرارداد", preview, multiline=True, size=11)
@@ -5392,7 +5414,7 @@ class App:
                     "{{address}}, {{mobile}}, {{job_title}}, {{dept_title}}, {{employment_date}}, "
                     "{{contract_end}}, {{daily_salary}}, {{monthly_salary}}, {{insurance_number}}, "
                     "{{company_name}}, {{company_address}}, {{company_phone}}, {{company_manager}}, "
-                    "{{work_start}}, {{work_end}}, {{today}}", 9, color=T()['muted']),
+                    "{{work_start}}, {{work_end}}, {{today}}, {{absorb_text}}, {{resp_text}}, {{extra_pay_line}}", 9, color=T()['muted']),
                 editor,
             ], scroll=ft.ScrollMode.AUTO, spacing=6, tight=True),
                 width=min((self.page.width or 400) - 40, 460),
@@ -5431,8 +5453,10 @@ class App:
                  lambda e: self.push("تنظیمات", self.v_settings)),
             tile(_ic("BUSINESS"), "اطلاعات و لوگوی شرکت", "نام، آدرس، امضا، لوگو",
                  lambda e: self.company_form()),
-            tile(_ic("BACKUP"), "پشتیبان‌گیری", "ذخیره/بازگردانی",
-                 lambda e: self.push("پشتیبان", self.v_backup)),
+            tile(_ic("BACKUP"), "فایل‌ها و پشتیبان", "فیش‌ها، قراردادها، تغییر نام، اشتراک، انتقال دیتابیس",
+                 lambda e: self.push("فایل‌ها و پشتیبان", self.v_files)),
+            tile(_ic("BEACH_ACCESS", "EVENT_AVAILABLE"), "گزارش مرخصی", "ماهانه و سالانه، سقف و مانده، چاپ",
+                 lambda e: self.push("گزارش مرخصی", self.v_ts_leave)),
             tile(_ic("DESCRIPTION"), "مدیریت قالب قرارداد", "ویرایش قالب پیش‌فرض با متغیرهای فارسی",
                  lambda e: self.push("قالب قرارداد", self.v_contract_manager)),
             tile(_ic("WIFI"), "اشتراک نسخه وب", ("🟢 " + web_urls()[0] if web_share_active() and web_urls() else "پورتال وب لوکال‌هاست؛ آدرس دقیق پس از فعال‌سازی"),
@@ -6772,18 +6796,39 @@ def _enhanced_compute_salary(self, emp, att, installments=None, bonuses=None, de
         }.get(shift_pattern, 0.0)
 
     daily_fixed = daily
+    by_part_daily = 0
     if self.service_years(emp) >= 1:
         by_daily = self.rate.get('base_year_daily')
         if by_daily is None:
             matching = [r for r in self.base_year_rules
                         if (r.get('min_service') or 1) <= self.service_years(emp) <= (r.get('max_service') or 999)]
             by_daily = matching[-1].get('amount') if matching else STD['base_year_daily']
-        daily_fixed += max(0, int(by_daily or 0))
+        by_part_daily = max(0, int(by_daily or 0))
+        daily_fixed += by_part_daily
     hourly = daily_fixed / self.hours_per_day
     overtime = rnd(hourly * self.overtime_coeff * ot_h)
     night = 0 if shift_pattern != 'none' else rnd(hourly * self.night_coeff * ng_h)
-    absent = rnd(hourly * ab_h)
+    hpd_ = max(self.hours_per_day, 1.0)
+    ab_days_eq = ab_h / hpd_                                      # معادل «روز» کسر کار
+    ab_days_full = max(0.0, _as_float(att.get('absent_days')))    # روز غیبت
+    ded_on = bool(_ep_flag(self.rate, 'ded_benefits', 1))
+    _exc = list(getattr(self, 'absent_exceptions', None) or [])
+
+    def _absent_excepted(title):
+        for x in _exc:
+            if x.get('item_key') != title:
+                continue
+            if x.get('emp_id') and int(x['emp_id']) == int(emp.get('id') or 0):
+                return True
+            if x.get('dept_id') and emp.get('dept_id') and int(x['dept_id']) == int(emp['dept_id']):
+                return True
+        return False
+    _hr = hourly - ((by_part_daily / hpd_) if _absent_excepted('پایه سنوات') else 0.0)
+    absent = rnd(_hr * ab_h)
     shift = rnd(daily_fixed * wd * sp / 100.0) if sp > 0 else 0
+    shift_ded = 0
+    if sp > 0 and ded_on and ab_days_eq > 0 and not _absent_excepted('نوبت‌کاری'):
+        shift_ded = min(shift, rnd(daily_fixed * sp / 100.0 * ab_days_eq))
     _ot_x = self.overtime_coeff - 1.0
     friday = (rnd(hourly * (1.0 + self.friday_coeff + _ot_x) * fd_h)
               + rnd(hourly * (1.0 + self.friday_coeff) * fr_h))
@@ -6797,14 +6842,29 @@ def _enhanced_compute_salary(self, emp, att, installments=None, bonuses=None, de
     taxable_items = 0
     insured_items = 0
     non_taxable_items = 0
+    ded_items = 0
+    ded_taxable = 0
+    ded_insured = 0
 
-    def add_item(name, amount, taxable=True, insurable=True):
-        nonlocal total_items, taxable_items, insured_items, non_taxable_items
+    def add_item(name, amount, taxable=True, insurable=True, per_day=0.0):
+        nonlocal total_items, taxable_items, insured_items, non_taxable_items, ded_items, ded_taxable, ded_insured
         amount = rnd(max(0, _as_float(amount)))
+        ded = 0
+        if per_day:
+            if _absent_excepted(name):
+                if ab_days_full > 0:
+                    amount += rnd(per_day * ab_days_full)    # استثنا: غیبت از این مزایا کم نمی‌شود
+            elif ded_on and ab_days_eq > 0:
+                ded = min(amount, rnd(per_day * ab_days_eq))
         if not amount:
             return
-        items.append({'name': name, 'amount': amount,
+        items.append({'name': name, 'amount': amount, 'ded': ded,
                       'taxable': bool(taxable), 'insurable': bool(insurable)})
+        ded_items += ded
+        if taxable:
+            ded_taxable += ded
+        if insurable:
+            ded_insured += ded
         total_items += amount
         if taxable:
             taxable_items += amount
@@ -6824,9 +6884,11 @@ def _enhanced_compute_salary(self, emp, att, installments=None, bonuses=None, de
         if (ctype == 'marital' or title == 'حق تاهل') and not emp.get('marital'):
             continue
         amount = max(0, _as_float(b.get('amount'))) * prorate
+        _pd = max(0, _as_float(b.get('amount'))) / float(dim)
         if ctype == 'percent':
             amount = base * max(0, _as_float(b.get('amount'))) / 100.0
-        add_item(title, amount, bool(b.get('taxable', 1)), bool(b.get('insurable', 1)))
+            _pd = daily * max(0, _as_float(b.get('amount'))) / 100.0
+        add_item(title, amount, bool(b.get('taxable', 1)), bool(b.get('insurable', 1)), _pd)
 
     for b in bonuses:
         if (b.get('emp_id') == emp.get('id') and b.get('year') == self.year
@@ -6836,6 +6898,15 @@ def _enhanced_compute_salary(self, emp, att, installments=None, bonuses=None, de
 
     base_year = self.base_year_bonus(emp, wd)
     add_item('پایه سنوات', base_year, True, True)
+    absorb_amt = resp_amt = 0
+    for _pf, _nm in EXTRA_PAYS:
+        _amt = extra_pay_amount(self.rate, emp, _pf, base, wd, dim)
+        if _pf == 'absorb': absorb_amt = _amt
+        else: resp_amt = _amt
+        if _amt:
+            add_item(_nm, _amt, bool(_ep_flag(self.rate, _pf + '_taxable', 1)),
+                     bool(_ep_flag(self.rate, _pf + '_insurable', 1)),
+                     extra_pay_perday(self.rate, emp, _pf, daily, dim))
 
     child_count = max(0, int(emp.get('child_count') or 0))
     if child_count:
@@ -6851,15 +6922,20 @@ def _enhanced_compute_salary(self, emp, att, installments=None, bonuses=None, de
         if child_per == 0 and self.rate.get('child_allowance') is None:
             child_per = STD['child_allowance']
         add_item('حق اولاد', child_per * child_count * prorate,
-                 child_taxable, child_insurable)
+                 child_taxable, child_insurable, child_per * child_count / float(dim))
 
     deduction_total = rnd(sum(max(0, _as_float(d.get('amount'))) for d in deductions
                               if d.get('emp_id') == emp.get('id')
                               and d.get('year') == self.year and d.get('month') == self.month))
 
     gross = rnd(base + overtime + night + shift + friday + holiday + mission + total_items)
-    taxable = max(0, rnd(base + overtime + night + shift + friday + holiday + taxable_items))
-    insurable = max(0, rnd(base + overtime + night + shift + friday + holiday + insured_items))
+    _m_tax = mission if _ep_flag(self.rate, 'mission_taxable', 0) else 0
+    _m_ins = mission if _ep_flag(self.rate, 'mission_insurable', 0) else 0
+    absent_total = rnd(absent + ded_items + shift_ded)
+    taxable = max(0, rnd(base + overtime + night + shift + friday + holiday + taxable_items + _m_tax
+                         - absent - ded_taxable - shift_ded))
+    insurable = max(0, rnd(base + overtime + night + shift + friday + holiday + insured_items + _m_ins
+                           - absent - ded_insured - shift_ded))
     insurance_exempt = bool(emp.get('insurance_exempt'))
     tax_exempt = bool(emp.get('tax_exempt'))
     ins_emp = 0 if insurance_exempt else self.insurance(insurable, self.insurance_rate)
@@ -6897,14 +6973,14 @@ def _enhanced_compute_salary(self, emp, att, installments=None, bonuses=None, de
         })
     loan_total = rnd(loan_total)
 
-    net = rnd(gross - ins_emp - tax - absent - loan_total - deduction_total)
+    net = rnd(gross - ins_emp - tax - absent_total - loan_total - deduction_total)
 
     return {
         'gross': gross, 'net': net,
         'insurance_emp': ins_emp, 'insurance_er': ins_er, 'tax': tax,
         'overtime': overtime, 'shift': shift, 'night': night,
         'mission': mission, 'friday_work': friday, 'holiday_work': holiday,
-        'absent_ded': absent,
+        'absent_ded': absent_total, 'absent_wage': absent, 'absent_benefits': absent_total - absent,
         'loan_install': loan_total,
         'loan_inst_ids': loan_ids,
         'loan_details': loan_details,
@@ -6924,6 +7000,8 @@ def _enhanced_compute_salary(self, emp, att, installments=None, bonuses=None, de
         'friday_rest_replaced': int(bool(att.get('friday_rest_replaced'))),
         'holiday_rest_replaced': int(bool(att.get('holiday_rest_replaced'))),
         'non_taxable_amount': non_taxable_items,
+        'absorb_amount': absorb_amt, 'resp_amount': resp_amt,
+        'mission_taxable': int(bool(_m_tax)), 'mission_insurable': int(bool(_m_ins)),
         'insured_base': insurable,
     }
 
@@ -6953,6 +7031,8 @@ def _last_wage_basis_monthly(calc, emp):
         if ctype == 'percent':
             amount = daily * 30 * amount / 100.0
         monthly_basis += amount
+    for _pf, _nm in EXTRA_PAYS:
+        monthly_basis += extra_pay_monthly(calc.rate, emp, _pf, daily)
     return rnd(max(0, monthly_basis))
 
 
@@ -9244,9 +9324,23 @@ TS_POLICY_DEFAULTS = {
     'ts_sick_paid': 1,          # پرداخت روز استعلاجی توسط کارفرما
     'ts_leave_rest_counts': 0,  # کسر جمعه/تعطیل داخل مرخصی از مانده مرخصی
     'ts_leave_quota': 30,       # سهمیه سالانه مرخصی (روز)
+    'ts_basis': 'recorded',     # مبنای کارکرد: recorded = فقط روزهای ثبت‌شده | monthly = کل ماه
+    'ts_leave_month_cap': 0,    # سقف مرخصی استحقاقی در یک ماه (روز؛ ۰ = بدون سقف)
+    'ts_leave_cap_action': 'warn',  # warn | unpaid (مازاد بر سقف بدون حقوق شود)
+    'ts_leave_hourly': 1,       # مرخصی ساعتی از مانده مرخصی کم شود
+    'ded_benefits': 1,          # کسر کار/غیبت از مزایا هم اعمال شود (به‌جز مأموریت)
+    'ts_leave_carry_cap': 9,    # سقف ذخیره مرخصی سال قبل (ماده ۶۶؛ ۰ = بدون سقف)
+    'ts_ot_need_approval': 1,   # اضافه‌کاری روزانه بیش از سقف فقط با تأیید مدیر حساب شود (ماده ۵۹)
+    'mission_taxable': 0,       # حق مأموریت مشمول مالیات
+    'mission_insurable': 0,     # حق مأموریت مشمول بیمه
+    'absorb_mode': 'fixed',     # حق جذب: fixed ماهانه | percent درصد مزد | daily روزانه
+    'absorb_taxable': 1, 'absorb_insurable': 1, 'absorb_prorate': 1, 'absorb_severance': 1,
+    'resp_mode': 'fixed',       # حق مسئولیت
+    'resp_taxable': 1, 'resp_insurable': 1, 'resp_prorate': 1, 'resp_severance': 1,
 }
 TS_POLICY_TYPES = {
     'ts_night_start': 'text', 'ts_night_end': 'text', 'ts_missing': 'text',
+    'ts_basis': 'text', 'ts_leave_cap_action': 'text', 'absorb_mode': 'text', 'resp_mode': 'text',
 }
 _TS_POLICY_COLUMNS = [(k, ('TEXT' if TS_POLICY_TYPES.get(k) == 'text' else 'INTEGER'))
                       for k in TS_POLICY_DEFAULTS]
@@ -9528,13 +9622,24 @@ def ts_compute_month(emp, year, month, recs, sched, pol, holidays, today_key=Non
     ot_step = max(1, int(pol['ts_ot_step']))
     ot_cap = int(pol['ts_ot_cap'])
     hire = _ts_hire_key(emp)
+    basis = (emp.get('ts_basis') or pol.get('ts_basis') or 'recorded')
+    if basis not in ('recorded', 'monthly'):
+        basis = 'recorded'
+    rec_mode = basis == 'recorded'
+    _rd = emp.get('ts_rest_day')
+    if _rd not in (None, ''):          # روز تعطیل هفتگی اختصاصی (تبصره ۱ ماده ۶۲)
+        try:
+            pol = dict(pol, ts_weekly_rest=int(_rd))
+        except (TypeError, ValueError):
+            pass
     valid_src, valid_tgt, issues = ts_build_replacements(recs, sched, pol, holidays, lo, hi)
 
     days = []
     tot = dict(required=0, worked=0, ot=0, deficit=0, night=0, friday=0, friday_repl=0, holiday=0, holiday_ot=0,
                absent_days=0, unpaid_days=0, leave_days=0.0, sick_days=0.0, mission_days=0.0,
                missing_days=0, recorded_days=0, replaced_days=0, pre_hire_days=0,
-               replaced_friday=0, replaced_holiday=0)
+               replaced_friday=0, replaced_holiday=0, counted_days=0, leave_hour_min=0,
+               leave_hour_days=0.0, leave_used=0.0, leave_cap_excess=0.0, basis=basis, ot_unapproved=0, sick_no_cert=0, sick_unverified=0)
     contrib = {k: [] for k in ('ot', 'deficit', 'night', 'friday', 'friday_repl', 'holiday', 'holiday_ot', 'unpaid', 'mission', 'leave', 'sick')}
     warnings = list(issues)
 
@@ -9652,6 +9757,16 @@ def ts_compute_month(emp, year, month, recs, sched, pol, holidays, today_key=Non
             if eff in ('work', 'swap_work'):
                 day['sick'] = 1.0; tot['sick_days'] += 1
                 contrib['sick'].append((key, 1, 'استعلاجی'))
+            sn = str(rec.get('sick_no') or '').strip()
+            if not sn:
+                tot['sick_no_cert'] += 1
+                trace.append('شماره گواهی استعلاجی ثبت نشده است')
+                dwarn.append('گواهی استعلاجی (شماره) ثبت نشده')
+            else:
+                trace.append(f"گواهی استعلاجی شماره {sn}" + (' • تأیید تأمین اجتماعی دریافت شده'
+                                                          if int(rec.get('sick_ok') or 0) else ' • تأیید تأمین اجتماعی هنوز ثبت نشده'))
+                if not int(rec.get('sick_ok') or 0):
+                    tot['sick_unverified'] += 1
             day['worked'] = 0; day['night'] = 0
         elif status == 'mission':
             day['cls'] = 'mission'
@@ -9661,10 +9776,13 @@ def ts_compute_month(emp, year, month, recs, sched, pol, holidays, today_key=Non
             day['worked'] = 0; day['night'] = 0
         elif status == 'closed':
             day['cls'] = 'closed'
-            trace.append('تعطیلی کارگاه ← روز کامل حساب می‌شود')
+            trace.append('تعطیلی کارگاه ← یک روز عادی و کامل حساب می‌شود (حتی اگر استراحت هفتگی یا تعطیل رسمی باشد)؛ بدون جمعه‌کاری/تعطیل‌کاری')
             day['worked'] = 0; day['night'] = 0
         elif eff in ('work', 'swap_work'):
             # روز کاری عادی
+            if credit and required:
+                tot['leave_hour_min'] += credit
+                tot['leave_hour_days'] += min(1.0, credit / float(required))
             if not worked and not credit:
                 if status == 'present':
                     worked = required
@@ -9673,6 +9791,16 @@ def ts_compute_month(emp, year, month, recs, sched, pol, holidays, today_key=Non
                 elif required == 0:
                     day['cls'] = 'ok'
                     trace.append('مدت مقرر این روز صفر است؛ ثبت لازم نیست')
+                elif rec_mode:
+                    day['cls'] = 'missing'
+                    if today_key and key > today_key:
+                        day['future'] = True
+                    else:
+                        tot['missing_days'] += 1
+                    trace.append('ورود/خروجی ثبت نشده ← این روز «بدون کارکرد» است؛ نه روز کارکرد حساب می‌شود و نه کسر کار. '
+                                 '(برای حساب کردن، ساعت ثبت کنید یا وضعیت «حاضر کامل» بزنید)')
+                    tot['required'] += required
+                    days.append(day); continue
                 elif pol['ts_missing'] == 'absent':
                     day['cls'] = 'absent'; day['paid'] = False; day['unpaid'] = 1
                     tot['absent_days'] += 1; tot['unpaid_days'] += 1; tot['missing_days'] += 1
@@ -9702,14 +9830,21 @@ def ts_compute_month(emp, year, month, recs, sched, pol, holidays, today_key=Non
                 if deficit <= grace:
                     trace.append(f"کسر {ts_hm(deficit)} در حد مجاز ({ts_hm(grace)}) است ← کسر نمی‌شود")
                     deficit = 0
+            if ot > ot_cap:
+                if int(pol.get('ts_ot_need_approval', 1)) and not int(rec.get('ot_ok') or 0):
+                    tot['ot_unapproved'] += ot - ot_cap
+                    trace.append(f"اضافه‌کاری {ts_hm(ot)} از سقف قانونی روزانه ({ts_hm(ot_cap)}) بیشتر است و تأیید مدیر ثبت نشده ← "
+                                 f"فقط {ts_hm(ot_cap)} حساب شد؛ برای حساب کردن کامل، «تأیید مدیر» را در همین روز بزنید")
+                    dwarn.append(f"اضافه‌کاری بیش از {ts_hm(ot_cap)} بدون تأیید مدیر؛ {ts_hm(ot - ot_cap)} حساب نشد")
+                    ot = ot_cap
+                else:
+                    trace.append(f"اضافه‌کاری {ts_hm(ot)} بیش از سقف {ts_hm(ot_cap)} است و با تأیید مدیر حساب شد")
             day['ot'], day['deficit'] = ot, deficit
             if ot:
                 tot['ot'] += ot
                 contrib['ot'].append((key, ot, f"کارکرد {ts_hm(worked)} − مقرر {ts_hm(net_req)}"))
                 trace.append(f"کارکرد {ts_hm(worked)} بیشتر از مقرر {ts_hm(net_req)} ← اضافه‌کاری {ts_hm(ot)}")
                 day['cls'] = 'over'
-                if ot > ot_cap:
-                    dwarn.append(f"اضافه‌کاری روزانه ({ts_hm(ot)}) از سقف {ts_hm(ot_cap)} بیشتر است")
             elif deficit:
                 tot['deficit'] += deficit
                 contrib['deficit'].append((key, deficit, f"مقرر {ts_hm(net_req)} − کارکرد {ts_hm(worked)}"))
@@ -9781,7 +9916,49 @@ def ts_compute_month(emp, year, month, recs, sched, pol, holidays, today_key=Non
             day['cls'] = 'closed'
         if today_key and key > today_key and not has_rec and day['cls'] in ('missing', 'ok') and required:
             day['future'] = True
+        cnt = 0
+        if status in ('absent', 'unpaid'):
+            cnt = 0
+        elif status == 'leave':
+            cnt = 1 if day['leave'] else 0
+        elif status == 'sick':
+            cnt = 1 if (int(pol['ts_sick_paid']) and eff in ('work', 'swap_work')) else 0
+        elif status == 'mission':
+            cnt = 1 if eff in ('work', 'swap_work') else 0
+        elif status == 'closed':
+            cnt = 1                      # تعطیلی کارگاه = روز عادی کامل، حتی در روز استراحت/تعطیل
+        elif eff in ('work', 'swap_work'):
+            cnt = 1 if (worked or credit or status == 'present') else 0
+        elif eff == 'swap_off':
+            cnt = 1
+        day['counted'] = cnt
+        if cnt:
+            tot['counted_days'] += 1
         days.append(day)
+
+    # ── سقف مرخصی ماهانه
+    used_l = tot['leave_days'] + (tot['leave_hour_days'] if int(pol['ts_leave_hourly']) else 0.0)
+    cap = float(pol.get('ts_leave_month_cap') or 0)
+    if cap > 0 and used_l > cap + 1e-9:
+        excess = used_l - cap
+        tot['leave_cap_excess'] = excess
+        warnings.append(f"مرخصی این ماه ({used_l:g} روز) از سقف ماهانه ({cap:g} روز) بیشتر است")
+        if pol['ts_leave_cap_action'] == 'unpaid':
+            n = min(int(excess + 1e-9), int(tot['leave_days']))   # فقط روزهای کامل؛ کسر روز به نفع پرسنل
+            for dd_ in reversed(days):
+                if n <= 0:
+                    break
+                if dd_.get('leave'):
+                    dd_['leave'] = 0.0; dd_['paid'] = False; dd_['unpaid'] = 1; dd_['cls'] = 'unpaid'
+                    if dd_.get('counted'):
+                        dd_['counted'] = 0; tot['counted_days'] -= 1
+                    tot['leave_days'] -= 1; tot['unpaid_days'] += 1
+                    contrib['leave'] = [c_ for c_ in contrib['leave'] if c_[0] != dd_['date']]
+                    contrib['unpaid'].append((dd_['date'], 1, 'مرخصی مازاد بر سقف ماهانه'))
+                    dd_['trace'].append(f"مرخصی مازاد بر سقف ماهانه ({cap:g} روز) ← بدون حقوق حساب شد")
+                    n -= 1
+            used_l = tot['leave_days'] + (tot['leave_hour_days'] if int(pol['ts_leave_hourly']) else 0.0)
+    tot['leave_used'] = used_l
 
     # ── تهاتر ماهانه کسر کار با اضافه‌کاری
     if int(pol['ts_offset']) and tot['ot'] and tot['deficit']:
@@ -9791,15 +9968,18 @@ def ts_compute_month(emp, year, month, recs, sched, pol, holidays, today_key=Non
         tot['ot_gross'], tot['deficit_gross'] = tot['ot'], tot['deficit']
         tot['ot'], tot['deficit'] = (net, 0) if net > 0 else (0, -net)
 
-    tot['paid_days'] = dim - tot['unpaid_days']
+    tot['paid_days'] = tot['counted_days'] if rec_mode else dim - tot['unpaid_days']
     tot['dim'] = dim
     for dd_ in days:
         if dd_.get('future'):
             tot.setdefault('future_days', 0)
             tot['future_days'] += 1
     if tot['missing_days']:
-        warnings.append(f"{tot['missing_days']} روز کاری ثبت‌نشده است و طبق قواعد "
-                        f"«{'غیبت' if pol['ts_missing'] == 'absent' else 'حاضر کامل'}» حساب شد")
+        if rec_mode:
+            warnings.append(f"{tot['missing_days']} روز کاری بدون ثبت ورود/خروج است و در کارکرد حساب نشد")
+        else:
+            warnings.append(f"{tot['missing_days']} روز کاری ثبت‌نشده است و طبق قواعد "
+                            f"«{'غیبت' if pol['ts_missing'] == 'absent' else 'حاضر کامل'}» حساب شد")
     for dd_ in days:
         for w in dd_['warnings']:
             warnings.append(f"{dd_['date']}: {w}")
@@ -9819,7 +9999,7 @@ def ts_to_attendance(res):
         'friday_replaced_hours': round(t['friday_repl'] / 60.0, 4),   # جمعه‌کاری با جایگزین
         'holiday_hours': round(t['holiday'] / 60.0, 4),               # تعطیل‌کاری (تا سقف روزانه)
         'holiday_ot_hours': round(t['holiday_ot'] / 60.0, 4),         # اضافه‌کاری در تعطیل
-        'mission_days': t['mission_days'],
+        'mission_days': t['mission_days'], 'absent_days': t['absent_days'],
         'leave_days': t['leave_days'], 'sick_days': t['sick_days'],
         'friday_rest_replaced': t['replaced_friday'], 'holiday_rest_replaced': t['replaced_holiday'],
     }
@@ -9838,8 +10018,12 @@ for _tbl, _cols in {
     'attendances': [('source', 'TEXT'), ('friday_replaced_hours', 'REAL DEFAULT 0'),
                     ('holiday_replaced_hours', 'REAL DEFAULT 0'), ('holiday_ot_hours', 'REAL DEFAULT 0'),
                     ('leave_days', 'REAL DEFAULT 0'),
-                    ('sick_days', 'REAL DEFAULT 0'), ('ts_synced_at', 'TEXT')],
-    'employees': [('schedule_id', 'INTEGER'), ('punch_pin', 'TEXT')],
+                    ('sick_days', 'REAL DEFAULT 0'), ('ts_synced_at', 'TEXT'),
+                    ('absent_days', 'REAL DEFAULT 0')],
+    'employees': [('schedule_id', 'INTEGER'), ('punch_pin', 'TEXT'), ('ts_basis', 'TEXT'),
+                  ('ts_rest_day', 'TEXT'),
+                  ('leave_carry', 'REAL DEFAULT 0'), ('absorb_value', 'REAL DEFAULT 0'),
+                  ('resp_value', 'REAL DEFAULT 0')],
 }.items():
     MIGRATIONS.setdefault(_tbl, [])
     _kn = {x[0] for x in MIGRATIONS[_tbl]}
@@ -9863,6 +10047,10 @@ CREATE TABLE IF NOT EXISTS att_days (
     UNIQUE(company_id, emp_id, jdate)
 );
 CREATE TABLE IF NOT EXISTS ts_meta (k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS absent_exceptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER, item_key TEXT,
+    emp_id INTEGER, dept_id INTEGER, reason TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_attd_emp ON att_days(company_id, emp_id, jdate);
 """
 
@@ -9874,6 +10062,10 @@ def _ts_init_db(self):
     c = self.conn()
     try:
         c.executescript(_TS_SCHEMA)
+        have = {r[1] for r in c.execute("PRAGMA table_info(att_days)").fetchall()}
+        for col, typ in (('sick_no', 'TEXT'), ('sick_ok', 'INTEGER DEFAULT 0'), ('ot_ok', 'INTEGER DEFAULT 0')):
+            if col not in have:
+                c.execute(f"ALTER TABLE att_days ADD COLUMN {col} {typ}")
         c.commit()
     except Exception:
         log_error('timesheet schema failed:\n' + traceback.format_exc())
@@ -9890,7 +10082,7 @@ def _upsert_att_ext(self, cid, a):
     """ذخیره کارکرد + دو ستون جدید (جمعه با جایگزین / اضافه‌کاری تعطیل)."""
     _UPSERT_ATT_ORIG(self, cid, a)
     sets, vals = [], []
-    for k in ('friday_replaced_hours', 'holiday_ot_hours'):
+    for k in ('friday_replaced_hours', 'holiday_ot_hours', 'absent_days'):
         if k in a:
             sets.append(f"{k}=?")
             vals.append(float(a.get(k) or 0))
@@ -9917,6 +10109,13 @@ def ts_policy(db, cid, year):
             pol[k] = str(v)
     if pol['ts_missing'] not in ('present', 'absent'):
         pol['ts_missing'] = 'present'
+    if pol['ts_basis'] not in ('recorded', 'monthly'):
+        pol['ts_basis'] = 'recorded'
+    if pol['ts_leave_cap_action'] not in ('warn', 'unpaid'):
+        pol['ts_leave_cap_action'] = 'warn'
+    for _k in ('absorb_mode', 'resp_mode'):
+        if pol[_k] not in ('fixed', 'percent', 'daily'):
+            pol[_k] = 'fixed'
     try:
         hpd = float(row.get('hours_per_day') or 7.33)
     except (TypeError, ValueError):
@@ -10048,6 +10247,30 @@ class TsContext:
                                 self.schedule(emp), self.policy, self.holidays, self.today)
 
 
+def ts_parse_leave(v):
+    """مرخصی ساعتی → دقیقه. '02:30' = ۲ ساعت و ۳۰ دقیقه ؛ '2' = ۲ ساعت ؛ عدد صحیح (عددِ ذخیره‌شدهٔ قدیمی) هم پذیرفته می‌شود."""
+    if isinstance(v, (int, float)):
+        return int(v)
+    s = str(v or '').translate(_DIG).strip().replace('٫', ':').replace('.', ':')
+    if not s:
+        return 0
+    if ':' in s:
+        h, _, m = s.partition(':')
+        h = int(h or 0); m = int(m or 0)
+        if m > 59 or h < 0 or m < 0:
+            raise ValueError('bad')
+        return h * 60 + m
+    if len(s) <= 2:
+        return int(s) * 60
+    if len(s) in (3, 4):
+        v4 = s.zfill(4)
+        h, m = int(v4[:2]), int(v4[2:])
+        if m > 59:
+            raise ValueError('bad')
+        return h * 60 + m
+    return int(float(s))
+
+
 def ts_clean_day_fields(f):
     """اعتبارسنجی و نرمال‌سازی ورودی یک روز؛ (fields, error)."""
     out = {}
@@ -10069,11 +10292,11 @@ def ts_clean_day_fields(f):
     if out['in2'] and not out['in1']:
         return None, 'ابتدا بازه اول را ثبت کنید'
     try:
-        lm = int(float(norm(f.get('leave_min') or 0) or 0))
+        lm = ts_parse_leave(f.get('leave_min'))
     except ValueError:
-        return None, 'مرخصی ساعتی معتبر نیست'
+        return None, 'مرخصی ساعتی معتبر نیست (نمونه: 02:00 یا 01:30)'
     if not 0 <= lm <= 720:
-        return None, 'مرخصی ساعتی باید بین ۰ تا ۷۲۰ دقیقه باشد'
+        return None, 'مرخصی ساعتی باید بین ۰ تا ۱۲ ساعت باشد'
     out['leave_min'] = lm
     rd = str(f.get('repl_date') or '').strip()
     if rd:
@@ -10083,6 +10306,9 @@ def ts_clean_day_fields(f):
         rd = jkey(*t)
     out['repl_date'] = rd
     out['note'] = str(f.get('note') or '').strip()[:300]
+    out['sick_no'] = str(f.get('sick_no') or '').strip()[:40]
+    out['sick_ok'] = 1 if str(f.get('sick_ok') or 0) in ('1', 'True', 'true') else 0
+    out['ot_ok'] = 1 if str(f.get('ot_ok') or 0) in ('1', 'True', 'true') else 0
     return out, None
 
 
@@ -10097,7 +10323,7 @@ def ts_save_day(db, cid, emp_id, jdate, fields, source='admin'):
     if clean['repl_date'] == jdate:
         return False, 'روز جایگزین نمی‌تواند همان روز باشد'
     empty = (not clean['status'] and not clean['in1'] and not clean['in2'] and not clean['leave_min']
-             and not clean['repl_date'] and not clean['note'])
+             and not clean['repl_date'] and not clean['note'] and not clean['ot_ok'] and not clean['sick_no'])
     with db.tx() as c:
         if empty:
             c.execute("DELETE FROM att_days WHERE company_id=? AND emp_id=? AND jdate=?", (cid, emp_id, jdate))
@@ -10112,6 +10338,8 @@ def ts_save_day(db, cid, emp_id, jdate, fields, source='admin'):
                       (cid, emp_id, jdate, clean['status'], clean['in1'], clean['out1'], clean['in2'],
                        clean['out2'], clean['leave_min'], clean['repl_date'], clean['note'], source,
                        datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            c.execute("UPDATE att_days SET sick_no=?, sick_ok=?, ot_ok=? WHERE company_id=? AND emp_id=? AND jdate=?",
+                      (clean['sick_no'], clean['sick_ok'], clean['ot_ok'], cid, emp_id, jdate))
     return True, ''
 
 
@@ -10238,14 +10466,190 @@ def ts_diff_with_attendance(att, a):
 
 
 def ts_leave_balance(db, cid, emp, year, pol=None):
-    """(استفاده‌شده، سهمیه، مانده) مرخصی استحقاقی سال شمسی."""
+    """(استفاده‌شده، سهمیه + مانده قبلی، مانده) مرخصی استحقاقی سال شمسی."""
     pol = pol or ts_policy(db, cid, year)
     used = 0.0
     for m in range(1, 13):
         ctx = TsContext(db, cid, year, m)
-        used += ctx.month_for(emp)['totals']['leave_days']
-    q = float(pol['ts_leave_quota'])
+        used += ctx.month_for(emp)['totals']['leave_used']
+    try:
+        carry = float(emp.get('leave_carry') or 0)
+    except (TypeError, ValueError):
+        carry = 0.0
+    cc = float(pol.get('ts_leave_carry_cap') or 0)
+    if cc > 0:
+        carry = min(carry, cc)        # ماده ۶۶: حداکثر ۹ روز قابل ذخیره است
+    q = float(pol['ts_leave_quota']) + carry
     return used, q, q - used
+
+
+def ts_leave_report(db, cid, year, month=None, employees=None):
+    """گزارش مرخصی ماهانه (month) یا سالانه (None) برای همه پرسنل فعال."""
+    pol = ts_policy(db, cid, year)
+    emps = employees if employees is not None else db.q(
+        "SELECT * FROM employees WHERE company_id=? AND is_active=1 ORDER BY personnel_code, id", (cid,))
+    ctxs = {m: TsContext(db, cid, year, m) for m in range(1, 13)}
+    sel = [month] if month else list(range(1, 13))
+    rows = []
+    for e in emps:
+        per = {}
+        for m in range(1, 13):
+            t = ctxs[m].month_for(e)['totals']
+            per[m] = dict(leave=t['leave_days'], hour_min=t['leave_hour_min'], used=t['leave_used'],
+                          sick=t['sick_days'], unpaid=t['unpaid_days'], absent=t['absent_days'],
+                          excess=t['leave_cap_excess'])
+        try:
+            carry = float(e.get('leave_carry') or 0)
+        except (TypeError, ValueError):
+            carry = 0.0
+        cc = float(pol.get('ts_leave_carry_cap') or 0)
+        if cc > 0:
+            carry = min(carry, cc)
+        quota = float(pol['ts_leave_quota']) + carry
+        year_used = sum(per[m]['used'] for m in range(1, 13))
+        rows.append(dict(
+            emp=e, per=per, carry=carry, quota=quota, year_used=year_used, remain=quota - year_used,
+            leave=sum(per[m]['leave'] for m in sel), hour_min=sum(per[m]['hour_min'] for m in sel),
+            used=sum(per[m]['used'] for m in sel), sick=sum(per[m]['sick'] for m in sel),
+            unpaid=sum(per[m]['unpaid'] for m in sel), excess=sum(per[m]['excess'] for m in sel)))
+    return rows, pol
+
+
+def ts_mask_time(v):
+    """ماسک ساعت ۲۴ ساعته: تایپ ارقام پشت‌سرهم → 0803 ⇒ 08:03 ؛ رقم اول بزرگ‌تر از ۲ ⇒ ساعت تک‌رقمی (830 ⇒ 08:30)."""
+    s = str(v or '').translate(_DIG)
+    d = ''.join(ch for ch in s if ch.isdigit())
+    if d and d[0] > '2':
+        d = '0' + d
+    d = d[:4]
+    return d if len(d) <= 2 else d[:2] + ':' + d[2:]
+
+
+
+# ───────── حق جذب / حق مسئولیت / مأموریت: ابزارهای محاسبه ─────────
+_ACTIVE_DB = []
+_orig_db_init_ts = Database.__init__
+
+
+def _db_init_hook(self, *a, **k):
+    _orig_db_init_ts(self, *a, **k)
+    _ACTIVE_DB[:] = [self]
+
+
+Database.__init__ = _db_init_hook
+
+EXTRA_PAYS = (('absorb', 'حق جذب'), ('resp', 'حق مسئولیت'))
+
+
+def _ep_flag(rate, k, default=1):
+    v = (rate or {}).get(k)
+    if v is None or v == '':
+        return int(default)
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _ep_mode(rate, prefix):
+    m = str((rate or {}).get(prefix + '_mode') or 'fixed')
+    return m if m in ('fixed', 'percent', 'daily') else 'fixed'
+
+
+def extra_pay_amount(rate, emp, prefix, base, wd, dim):
+    """مبلغ حق جذب/مسئولیت ماه؛ مقدار هر نفر در فرم پرسنل (۰ = ندارد)."""
+    v = max(0.0, _as_float(emp.get(prefix + '_value')))
+    if v <= 0 or wd <= 0:
+        return 0
+    mode = _ep_mode(rate, prefix)
+    if mode == 'percent':
+        return rnd(base * min(v, 100.0) / 100.0)   # درصد بیش از ۱۰۰ بی‌معناست
+    if mode == 'daily':
+        return rnd(v * wd)
+    pr = (min(wd, dim) / float(dim)) if _ep_flag(rate, prefix + '_prorate', 1) else 1.0
+    return rnd(v * pr)
+
+
+def extra_pay_monthly(rate, emp, prefix, daily):
+    """سهم ماهانه (۳۰ روزه) برای مبنای عیدی و سنوات؛ صفر اگر در مبنا نباشد."""
+    v = max(0.0, _as_float(emp.get(prefix + '_value')))
+    if v <= 0 or not _ep_flag(rate, prefix + '_severance', 1):
+        return 0.0
+    mode = _ep_mode(rate, prefix)
+    if mode == 'percent':
+        return daily * 30 * v / 100.0
+    if mode == 'daily':
+        return v * 30
+    return v
+
+
+def extra_pay_text(rate, emp, prefix):
+    v = max(0.0, _as_float(emp.get(prefix + '_value')))
+    if v <= 0:
+        return ''
+    mode = _ep_mode(rate, prefix)
+    amt = {'fixed': f"{fmt(int(v))} ریال در ماه", 'percent': f"{v:g} درصد مزد پایه",
+           'daily': f"{fmt(int(v))} ریال به‌ازای هر روز کارکرد"}[mode]
+    ins = 'مشمول' if _ep_flag(rate, prefix + '_insurable', 1) else 'غیرمشمول'
+    tax = 'مشمول' if _ep_flag(rate, prefix + '_taxable', 1) else 'غیرمشمول'
+    return f"{amt} ({ins} بیمه، {tax} مالیات)"
+
+
+def extra_pay_tokens(emp):
+    """متغیرهای قرارداد: {{absorb_text}} {{resp_text}} {{extra_pay_line}}"""
+    rate = {}
+    try:
+        if _ACTIVE_DB:
+            db = _ACTIVE_DB[0]
+            cid = emp.get('company_id')
+            rate = ts_policy(db, cid, today_jalali()[0]) if cid else {}
+            row = db.q1("SELECT * FROM rate_years WHERE company_id=? ORDER BY year DESC LIMIT 1", (cid,)) or {}
+            rate = dict(row, **{k: v for k, v in rate.items() if k.startswith(('absorb', 'resp'))})
+    except Exception:
+        rate = {}
+    a, r = extra_pay_text(rate, emp, 'absorb'), extra_pay_text(rate, emp, 'resp')
+    parts = []
+    if a: parts.append(f"حق جذب: {a}")
+    if r: parts.append(f"حق مسئولیت: {r}")
+    return {'absorb_text': a or 'ندارد', 'resp_text': r or 'ندارد',
+            'extra_pay_line': (' ' + ' • '.join(parts) + '.') if parts else ''}
+
+
+
+def extra_pay_perday(rate, emp, prefix, daily, dim):
+    """مبلغ یک روزِ حق جذب/مسئولیت برای کسر کار."""
+    v = max(0.0, _as_float(emp.get(prefix + '_value')))
+    mode = _ep_mode(rate, prefix)
+    if mode == 'percent':
+        return daily * min(v, 100.0) / 100.0
+    if mode == 'daily':
+        return v
+    return v / float(max(dim, 1))
+
+
+_orig_company_data = Database.company_data
+
+
+def _company_data_abs(self, cid, conn=None):
+    d = _orig_company_data(self, cid, conn)
+    try:
+        d['absent_exceptions'] = self.q("SELECT * FROM absent_exceptions WHERE company_id=?", (cid,))
+    except Exception:
+        d['absent_exceptions'] = []
+    return d
+
+
+Database.company_data = _company_data_abs
+_orig_calc_init_abs = PayrollCalculator.__init__
+
+
+def _calc_init_abs(self, company, year, month):
+    _orig_calc_init_abs(self, company, year, month)
+    self.absent_exceptions = company.get('absent_exceptions', []) or []
+
+
+PayrollCalculator.__init__ = _calc_init_abs
+
 # <<<TS_CORE_END>>>
 
 
@@ -10675,6 +11079,7 @@ def emp_card_blocks(company, emp, dept, sched=None, financial=False):
     if financial:
         sec('اطلاعات مالی و بانکی', [('حقوق روزانه (ریال)', fmt(emp.get('daily_salary') or 0)),
                                      ('حقوق ماهانه (ریال)', fmt((emp.get('daily_salary') or 0) * 30)),
+                                     ('حق جذب', emp.get('absorb_value')), ('حق مسئولیت', emp.get('resp_value')),
                                      ('نام بانک', emp.get('bank_name')), ('شماره حساب', emp.get('account_number')),
                                      ('شماره کارت', emp.get('card_number')), ('شبا', emp.get('iban')),
                                      ('کد پرونده مالیاتی', emp.get('tax_file_code'))], 2, (184, 134, 11))
@@ -10749,7 +11154,7 @@ label{font-size:12px;color:var(--mu);display:block;margin:6px 2px 3px}
 .tile{background:var(--bg);border-radius:12px;padding:9px;text-align:center}.tile b{display:block;font-size:18px}.tile span{font-size:11px;color:var(--mu)}
 .sheetbg{position:fixed;inset:0;background:#0007;z-index:20;display:none}.sheetbg.on{display:block}
 .sheet{position:fixed;left:0;right:0;bottom:0;z-index:21;background:var(--card);border-radius:22px 22px 0 0;max-height:92vh;overflow:auto;padding:14px;max-width:760px;margin:0 auto;display:none}.sheet.on{display:block}
-.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{border:1.5px solid var(--ln);border-radius:20px;padding:7px 12px;background:var(--card);cursor:pointer;font-size:13px}.chip.on{background:#1e3a5f;color:#fff;border-color:#1e3a5f}
+.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{border:1.5px solid var(--ln);border-radius:20px;padding:7px 12px;background:var(--card);cursor:pointer;font-size:13px}.chip{border-color:var(--c,#cbd5e1);font-weight:600}.chip.on{background:var(--c,#1e3a5f);color:#fff;border-color:var(--c,#1e3a5f);box-shadow:0 2px 8px rgba(0,0,0,.2)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .res{background:var(--bg);border-radius:14px;padding:10px;margin:10px 0}
 .res .k{display:flex;justify-content:space-between;padding:3px 0;font-size:13.5px}.res .k b{font-size:14px}
@@ -10770,7 +11175,7 @@ const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;'
 const hm=m=>{m=Math.round(m||0);const s=m<0?'-':'';m=Math.abs(m);return fa(s+Math.floor(m/60)+':'+String(m%60).padStart(2,'0'))};
 const MONTHS=['فروردین','اردیبهشت','خرداد','تیر','مرداد','شهریور','مهر','آبان','آذر','دی','بهمن','اسفند'];
 const WD=['ش','ی','د','س','چ','پ','ج'];
-const ST=[['','حضور (از ساعت ورود/خروج)'],['present','حاضر کامل'],['mission','مأموریت'],['leave','مرخصی استحقاقی'],['sick','استعلاجی'],['unpaid','بدون حقوق'],['absent','غیبت'],['rest','استراحت هفتگی (شیفتی)'],['closed','تعطیلی کارگاه']];
+const ST=[['','🕒 ثبت از روی ساعت','#1e3a5f'],['present','✅ حاضر کامل','#16a34a'],['mission','✈️ مأموریت','#2563eb'],['leave','🏖 مرخصی استحقاقی','#0d9488'],['sick','🏥 استعلاجی','#db2777'],['unpaid','🚫 بدون حقوق','#d97706'],['absent','❌ غیبت','#dc2626'],['rest','🛌 استراحت هفتگی','#64748b'],['closed','🏪 تعطیلی کارگاه (روز عادی)','#7c3aed']];
 const CLS={ok:'حضور',partial:'کسر کار',over:'اضافه‌کار',absent:'غیبت',leave:'مرخصی',sick:'استعلاجی',unpaid:'بدون حقوق',mission:'مأموریت',rest:'استراحت',holiday:'تعطیل',closed:'تعطیلی',missing:'ثبت‌نشده',rest_work:'جمعه‌کاری',holiday_work:'تعطیل‌کاری',swap_work:'با جایگزین',swap_off:'جایگزین',pre_hire:'قبل استخدام'};
 let S={me:null,emps:[],emp:null,y:0,m:0,data:null,view:'cal',sel:null,off:0,mode:'admin',draft:null,pt:null};
 let toastT=null;
@@ -10898,6 +11303,7 @@ function totals(d){
   const T=[['روز کارکرد',fa(t.paid_days)+'/'+fa(t.dim)],['ساعت کارکرد',hm(t.worked)],['مدت مقرر',hm(t.required)],['اضافه‌کاری',hm(t.ot)],['کسر کار',hm(t.deficit)],['شب‌کاری',hm(t.night)],['جمعه (بدون جایگزین)',hm(t.friday)],['جمعه (با جایگزین)',hm(t.friday_repl)],['تعطیل‌کاری',hm(t.holiday)],['اضافه‌کاری در تعطیل',hm(t.holiday_ot)],['مأموریت',fa(t.mission_days)],['مرخصی',fa(t.leave_days)],['استعلاجی',fa(t.sick_days)],['غیبت/بدون حقوق',fa(t.unpaid_days)]];
   return `<div class="card"><b>جمع‌بندی ماه</b><div class="tiles" style="margin-top:8px">${T.map(a=>`<div class="tile"><b>${a[1]}</b><span>${a[0]}</span></div>`).join('')}</div>${d.leave?`<p class="mu" style="font-size:12px;margin:8px 0 0">مانده مرخصی سال: ${fa(d.leave.left)} روز از ${fa(d.leave.quota)}</p>`:''}</div>`;
 }
+function maskT(el){let s=el.value.replace(/[۰-۹]/g,c=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(c)).replace(/[٠-٩]/g,c=>'٠١٢٣٤٥٦٧٨٩'.indexOf(c));let d=s.replace(/\D/g,'');if(d&&d[0]>'2')d='0'+d;d=d.slice(0,4);const v=d.length<=2?d:d.slice(0,2)+':'+d.slice(2);if(el.value!==v)el.value=v}
 function closeSheet(){S.sel=null;$('#bg').classList.remove('on');$('#sh').classList.remove('on')}
 function openDay(date){
   const x=S.data.days.find(z=>z.date==date);if(!x)return;S.sel=date;
@@ -10907,10 +11313,10 @@ function openDay(date){
   let h=`<div class="row" style="justify-content:space-between"><b style="font-size:17px">${esc(x.wd_name)} ${fa(x.date)}</b><button class="btn l" onclick="closeSheet()">✕</button></div>
   <div class="mu" style="font-size:12.5px">${x.kind=='rest'?'روز استراحت هفتگی':x.kind=='holiday'?'تعطیل رسمی — '+esc(x.holiday):'روز کاری'} • مدت مقرر: ${hm(x.cal_req)}</div>`;
   if(adm){
-    h+=`<label>وضعیت روز</label><div class="chips" id="stc">${ST.map(a=>`<span class="chip ${S.draft.status==a[0]?'on':''}" data-v="${a[0]}">${a[1]}</span>`).join('')}</div>
-    <div class="grid2"><div><label>ورود</label><input type="time" id="in1" value="${esc(x.in1)}"></div><div><label>خروج</label><input type="time" id="out1" value="${esc(x.out1)}"></div>
-    <div><label>ورود مجدد (اختیاری)</label><input type="time" id="in2" value="${esc(x.in2)}"></div><div><label>خروج دوم</label><input type="time" id="out2" value="${esc(x.out2)}"></div></div>
-    <div class="grid2"><div><label>مرخصی ساعتی (دقیقه)</label><input id="lm" inputmode="numeric" value="${x.leave_min||''}"></div><div><label>توضیح</label><input id="nt" value="${esc(x.note)}"></div></div>`;
+    h+=`<label>وضعیت روز</label><div class="chips" id="stc">${ST.map(a=>`<span class="chip ${S.draft.status==a[0]?'on':''}" data-v="${a[0]}" style="--c:${a[2]}">${a[1]}</span>`).join('')}</div>
+    <div class="grid2"><div><label>ورود</label><input type="text" inputmode="numeric" maxlength="5" placeholder="08:00" class="tm" autocomplete="off" id="in1" value="${esc(x.in1)}"></div><div><label>خروج</label><input type="text" inputmode="numeric" maxlength="5" placeholder="08:00" class="tm" autocomplete="off" id="out1" value="${esc(x.out1)}"></div>
+    <div><label>ورود مجدد (اختیاری)</label><input type="text" inputmode="numeric" maxlength="5" placeholder="08:00" class="tm" autocomplete="off" id="in2" value="${esc(x.in2)}"></div><div><label>خروج دوم</label><input type="text" inputmode="numeric" maxlength="5" placeholder="08:00" class="tm" autocomplete="off" id="out2" value="${esc(x.out2)}"></div></div>
+    <div class="grid2"><div><label>مرخصی ساعتی (ساعت:دقیقه)</label><input id="lm" class="tm" inputmode="numeric" maxlength="5" placeholder="02:00" autocomplete="off" value="${x.leave_min?String(Math.floor(x.leave_min/60)).padStart(2,'0')+':'+String(x.leave_min%60).padStart(2,'0'):''}"></div><div><label>توضیح</label><input id="nt" value="${esc(x.note)}"></div></div>`;
     if(x.kind=='holiday'){h+=`<div class="warn">تعطیل رسمی روز جایگزین ندارد؛ ساعت کار این روز «تعطیل‌کاری» ثبت می‌شود.</div>`}
     if(x.kind=='rest'){
       const cand=S.data.days.filter(z=>z.cal_req>0&&z.kind=='work'&&z.date!=x.date);
@@ -10924,7 +11330,7 @@ function openDay(date){
   showRes(x);
   if(adm){
     sh.querySelectorAll('#stc .chip').forEach(c=>c.onclick=()=>{S.draft.status=c.dataset.v;sh.querySelectorAll('#stc .chip').forEach(z=>z.classList.toggle('on',z===c));preview()});
-    sh.querySelectorAll('input,select').forEach(i=>{i.oninput=preview;i.onchange=preview});
+    sh.querySelectorAll('input,select').forEach(i=>{i.oninput=()=>{if(i.classList.contains('tm'))maskT(i);preview()};i.onchange=preview;if(i.classList.contains('tm'))maskT(i)});
   }
 }
 function collect(){
@@ -11340,6 +11746,23 @@ async def share_text(page, text):
     return await _copy_text(page, text)
 
 
+def time_tf(label, value='', on_change=None, hint='08:00', width=None, size=13, expand=False):
+    """فیلد ساعت ۲۴ ساعته با ماسک خودکار: تایپ 0803 ⇒ 08:03 (و 830 ⇒ 08:30)."""
+    def ch(e):
+        v = e.control.value or ''
+        m = ts_mask_time(v)
+        if m != v:
+            e.control.value = m
+            try: e.control.update()
+            except Exception: pass
+        if on_change:
+            on_change(e)
+    c = tf(label, value, hint=hint, width=width, kb=True, on_change=ch, size=size, expand=expand)
+    try: c.max_length = 5
+    except Exception: pass
+    return c
+
+
 def _stamp():
     return datetime.now().strftime('%Y%m%d_%H%M%S')
 
@@ -11383,20 +11806,28 @@ def _app_show_doc(self, blocks, base, title='پیش‌نمایش', on_close=None
         self.toast('ساخت پیش‌نمایش ممکن نشد', True)
         return
 
+    name_tf = tf('نام فایل خروجی (قابل ویرایش)', f"{base}_{_stamp()}", expand=True, size=12)
+
+    def _target(ext):
+        nm = _fname_clean(name_tf.value or '', f"{base}_{_stamp()}")
+        return nm, _unique_path(os.path.join(export_dir(), nm + ext))
+
     def make_pdf():
-        if st.get('pdf') and os.path.isfile(st['pdf']):
+        nm = _fname_clean(name_tf.value or '', base)
+        if st.get('pdf') and st.get('pdf_name') == nm and os.path.isfile(st['pdf']):
             return st['pdf']
-        p = os.path.join(export_dir(), f"{base}_{_stamp()}.pdf")
+        nm, p = _target('.pdf')
         render_doc_pdf(p, blocks, 1240)
-        st['pdf'] = p
+        st['pdf'], st['pdf_name'] = p, nm
         return p
 
     def make_png():
-        if st.get('png') and os.path.isfile(st['png']):
+        nm = _fname_clean(name_tf.value or '', base)
+        if st.get('png') and st.get('png_name') == nm and os.path.isfile(st['png']):
             return st['png']
-        p = os.path.join(export_dir(), f"{base}_{_stamp()}.png")
+        nm, p = _target('.png')
         render_doc_png(p, blocks, 1400)
-        st['png'] = p
+        st['png'], st['png_name'] = p, nm
         return p
 
     async def do_print(ev):
@@ -11459,6 +11890,7 @@ def _app_show_doc(self, blocks, base, title='پیش‌نمایش', on_close=None
             ft.Container(ft.Column([body], scroll=ft.ScrollMode.AUTO, tight=True), height=H,
                          bgcolor='#e5e9f0', border_radius=8, padding=4),
             txt('برای بزرگ‌نمایی دو انگشتی زوم کنید • «چاپ» سند را به‌صورت PDF باز می‌کند', 9, color=T()['muted']),
+            name_tf,
             ft.Row([gbtn('🖨 چاپ', _ic('PRINT'), do_print, T()['primary'], expand=True),
                     gbtn('📤 اشتراک PDF', _ic('SHARE'), do_share_pdf, T()['success'], expand=True)], spacing=6),
             ft.Row([obtn('🖼 اشتراک تصویر', _ic('IMAGE'), do_share_png, expand=True),
@@ -11649,13 +12081,19 @@ RATE_GROUPS = [
              note='اضافه‌کاری کمتر از این مقدار حساب نمی‌شود'),
         dict(k='ts_ot_step', t='int', label='گرد کردن اضافه‌کاری (دقیقه)', lo=1, hi=60,
              note='اضافه‌کاری روزانه به پایین‌ترین مضرب این عدد گرد می‌شود (۱ = بدون گرد)'),
-        dict(k='ts_ot_cap', t='int', label='سقف هشدار اضافه‌کاری روزانه (دقیقه)', lo=30, hi=720,
-             note='بیشتر از این، فقط هشدار می‌دهد (محاسبه را تغییر نمی‌دهد)'),
+        dict(k='ts_ot_cap', t='int', label='سقف اضافه‌کاری روزانه (دقیقه؛ قانون: ۲۴۰)', lo=30, hi=720,
+             note='ماده ۵۹: حداکثر ۴ ساعت در روز'),
+        dict(k='ts_ot_need_approval', t='bool', label='بیش از سقف فقط با تأیید مدیر حساب شود',
+             note='روشن: مازاد روزانه تا وقتی در «ثبت تردد روز» تیک «تأیید مدیر» نخورد پرداخت نمی‌شود'),
         dict(k='ts_night_start', t='time', label='شروع شب‌کاری', note='پیش‌فرض ۲۲:۰۰'),
         dict(k='ts_night_end', t='time', label='پایان شب‌کاری', note='پیش‌فرض ۰۶:۰۰'),
-        dict(k='ts_missing', t='enum', label='روز کاری بدون ثبت ورود/خروج',
+        dict(k='ts_basis', t='enum', label='مبنای روز کارکرد (پیش‌فرض همه پرسنل)',
+             opts=[('recorded', 'فقط روزهای ثبت‌شده (روزمزد؛ پیشنهادی)'), ('monthly', 'کل ماه (ماهانه‌بگیر)')],
+             note='«فقط ثبت‌شده»: هر روزی که ورود/خروج، «حاضر»، مرخصی یا مأموریت ندارد (حتی جمعه‌های استراحت) در کارکرد نمی‌آید. '
+                  'برای هر پرسنل می‌توان در فرم مشخصاتش جدا تعیین کرد.'),
+        dict(k='ts_missing', t='enum', label='روز کاری بدون ثبت (فقط مبنای «کل ماه»)',
              opts=[('present', 'حاضر کامل (فرض حضور)'), ('absent', 'غیبت (کسر یک روز)')],
-             note='برای روزهای کاریِ گذشته که هیچ ورود/خروجی ندارند'),
+             note='فقط وقتی مبنا «کل ماه» باشد کاربرد دارد'),
         dict(k='ts_offset', t='bool', label='تهاتر ماهانه کسر کار با اضافه‌کاری',
              note='در پایان ماه، کسر کار از اضافه‌کاری کم می‌شود'),
         dict(k='ts_repl_window', t='int', label='حداکثر فاصله روز جایگزین (روز)', lo=1, hi=60,
@@ -11665,7 +12103,42 @@ RATE_GROUPS = [
         dict(k='ts_sick_paid', t='bool', label='روز استعلاجی با حقوق باشد', note='در غیر این صورت کسر می‌شود'),
         dict(k='ts_leave_rest_counts', t='bool', label='جمعه/تعطیل داخل مرخصی از مانده کم شود',
              note='معمولاً خاموش؛ فقط روزهای کاری از مانده کم می‌شوند'),
-        dict(k='ts_leave_quota', t='int', label='سهمیه سالانه مرخصی (روز)', lo=0, hi=365, note='قانون کار: ۳۰ روز'),
+        dict(k='ts_leave_quota', t='int', label='سهمیه سالانه مرخصی (روز)', lo=0, hi=365, note='قانون کار: ۳۰ روز (۲٫۵ روز در ماه)'),
+        dict(k='ts_leave_month_cap', t='int', label='سقف مرخصی استحقاقی در یک ماه (روز)', lo=0, hi=31,
+             note='۰ = بدون سقف. مرخصی ساعتی هم (اگر فعال باشد) جمع می‌شود'),
+        dict(k='ts_leave_cap_action', t='enum', label='مرخصی مازاد بر سقف ماهانه',
+             opts=[('warn', 'فقط هشدار'), ('unpaid', 'مازاد بدون حقوق حساب شود')],
+             note='اثر مستقیم بر روز کارکرد همان ماه'),
+        dict(k='ts_leave_carry_cap', t='int', label='سقف ذخیره مرخصی سال قبل (روز)', lo=0, hi=60,
+             note='ماده ۶۶: حداکثر ۹ روز؛ مانده سال قبل پرسنل بیش از این مقدار نادیده گرفته می‌شود (۰ = بدون سقف)'),
+        dict(k='ts_leave_hourly', t='bool', label='مرخصی ساعتی از مانده مرخصی کم شود',
+             note='مرخصی استحقاقی ساعتی ÷ مدت مقرر همان روز = کسر از مانده (۸ ساعت ≈ ۱ روز)'),
+    ]),
+    ('➖ کسر کار و غیبت', '#dc2626', [
+        dict(k='ded_benefits', t='bool', label='کسر کار/غیبت از مزایا هم اعمال شود',
+             note='روشن: ساعت/روز کسر کار به نسبت (÷ روزهای ماه) از حق مسکن، بن کارگری، تأهل، اولاد، پایه سنوات، نوبت‌کاری، '
+                  'حق جذب، حق مسئولیت و مزایای دیگر کم می‌شود؛ حق مأموریت هیچ‌وقت کسر نمی‌شود. '
+                  'استثناها را در «استثنای کسر کار» تعریف کنید.'),
+    ]),
+    ('🧳 مأموریت، حق جذب و حق مسئولیت', '#9333ea', [
+        dict(k='mission_taxable', t='bool', label='حق مأموریت مشمول مالیات',
+             note='خاموش: مبلغ مأموریت از مبنای مالیات کسر می‌شود'),
+        dict(k='mission_insurable', t='bool', label='حق مأموریت مشمول بیمه',
+             note='خاموش: مبلغ مأموریت در مبنای بیمه نمی‌آید'),
+        dict(k='absorb_mode', t='enum', label='حق جذب — روش محاسبه',
+             opts=[('fixed', 'مبلغ ثابت ماهانه'), ('percent', 'درصدی از مزد پایه کارکرد'), ('daily', 'مبلغ روزانه × روز کارکرد')],
+             note='مقدار حق جذب هر نفر در فرم مشخصات او (۰ = ندارد)'),
+        dict(k='absorb_prorate', t='bool', label='حق جذب متناسب با روز کارکرد', note='فقط روش «ثابت ماهانه»'),
+        dict(k='absorb_taxable', t='bool', label='حق جذب مشمول مالیات'),
+        dict(k='absorb_insurable', t='bool', label='حق جذب مشمول بیمه'),
+        dict(k='absorb_severance', t='bool', label='حق جذب در مبنای عیدی و سنوات', note='طبق رأی/رویه معمولاً بله'),
+        dict(k='resp_mode', t='enum', label='حق مسئولیت — روش محاسبه',
+             opts=[('fixed', 'مبلغ ثابت ماهانه'), ('percent', 'درصدی از مزد پایه کارکرد'), ('daily', 'مبلغ روزانه × روز کارکرد')],
+             note='مقدار حق مسئولیت هر نفر در فرم مشخصات او (۰ = ندارد)'),
+        dict(k='resp_prorate', t='bool', label='حق مسئولیت متناسب با روز کارکرد', note='فقط روش «ثابت ماهانه»'),
+        dict(k='resp_taxable', t='bool', label='حق مسئولیت مشمول مالیات'),
+        dict(k='resp_insurable', t='bool', label='حق مسئولیت مشمول بیمه'),
+        dict(k='resp_severance', t='bool', label='حق مسئولیت در مبنای عیدی و سنوات'),
     ]),
 ]
 _RATE_FIELD = {f['k']: f for _g, _c, fs in RATE_GROUPS for f in fs}
@@ -11844,10 +12317,13 @@ def _rate_edit_dialog(self, row, f):
             shown = fmt(int(cur or 0))
         else:
             shown = f"{cur:g}" if isinstance(cur, (int, float)) else str(cur)
-        ctl['tf'] = tf(f['label'] + {'prem': ' (درصد)', 'pct': ' (درصد)', 'mult': ' (ضریب)',
-                                     'money': ' (ریال)'}.get(t, ''),
-                       shown, kb=(t != 'time'), money=(t == 'money'), on_change=preview if t != 'money' else None,
-                       expand=True)
+        if t == 'time':
+            ctl['tf'] = time_tf(f['label'] + ' (۲۴ ساعته؛ مثلاً 2200)', shown, on_change=preview, size=12, expand=True)
+        else:
+            ctl['tf'] = tf(f['label'] + {'prem': ' (درصد)', 'pct': ' (درصد)', 'mult': ' (ضریب)',
+                                         'money': ' (ریال)'}.get(t, ''),
+                           shown, kb=True, money=(t == 'money'), on_change=preview if t != 'money' else None,
+                           expand=True)
         if t == 'money':
             base_cb = ctl['tf'].on_change
             def mf(e):
@@ -12027,12 +12503,43 @@ def _app_v_rates(self):
                             ft.Column([txt(title, 12, True), txt(sub, 9, color=MUTED)], spacing=1, expand=True),
                             ft.Icon(_ic('CHEVRON_LEFT'), color=MUTED, size=16)], spacing=8),
                     padding=10, on_click=lambda e: self.push(title, fn))
+    def section_card(title, color, lines, fn, btn='مدیریت و ویرایش'):
+        return card(ft.Column([
+            ft.Row([ft.Container(width=5, height=18, bgcolor=color, border_radius=3),
+                    txt(title, 12, True, expand=True),
+                    obtn(btn, _ic('EDIT'), lambda e: self.push(title, fn), height=32, size=10)], spacing=6),
+            *[txt(l, 10, color=MUTED) for l in lines]], spacing=4), padding=10)
+
+    def q_year(table, order=''):
+        return self.db.q(f"SELECT * FROM {table} WHERE company_id=? AND year=? {order}", (self.cid, year))
+    ben = q_year('benefits')
+    tax = q_year('tax_brackets', 'ORDER BY from_amount')
+    byr = q_year('base_year_rules', 'ORDER BY min_service')
+    eid = q_year('eid_rules')
+    n_exc = (self.db.q1("SELECT COUNT(*) AS n FROM absent_exceptions WHERE company_id=?", (self.cid,)) or {}).get('n', 0)
+    n_hol = len([k for k in ts_holidays(self.db, self.cid, year) if k.startswith(f"{year}/")])
+    n_sch = len(ts_schedules(self.db, self.cid))
     items += [
         obtn('کپی تنظیمات از سال قبل', _ic('CONTENT_COPY'), copy_prev, expand=True),
-        tile(_ic('CARD_GIFTCARD'), 'مزایای سالانه', 'مزایای اختصاصی و استثناها', self.v_benefits),
-        tile(_ic('ACCOUNT_BALANCE'), 'پله‌های مالیات حقوق', 'جدول پلکانی مالیات', self.v_tax),
-        tile(_ic('STAIRS'), 'قواعد پایه سنوات', 'بازه سابقه و مبلغ', self.v_base_year_rules),
-        tile(_ic('CELEBRATION'), 'قواعد عیدی', 'روزهای مبنا و سقف', self.v_eid_rules),
+        section_card(f'مزایای سالانه ({len(ben)})', '#0f766e',
+                     [f"{b.get('title')}: {fmt(int(b.get('amount') or 0))} ریال" +
+                      (' • مشمول بیمه' if b.get('insurable') else '') + (' • مشمول مالیات' if b.get('taxable') else '')
+                      for b in ben[:8]] or ['هنوز تعریف نشده'], self.v_benefits),
+        section_card(f'پله‌های مالیات ({len(tax)})', '#1d4ed8',
+                     [f"{fmt(int(t_.get('from_amount') or 0))} تا " +
+                      (fmt(int(t_['to_amount'])) if t_.get('to_amount') else '∞') + f" ← {t_.get('rate'):g}٪"
+                      for t_ in tax[:8]] or ['هنوز تعریف نشده'], self.v_tax),
+        section_card(f'قواعد پایه سنوات ({len(byr)})', '#7c3aed',
+                     [f"{r_.get('min_service')} تا {r_.get('max_service')} سال: {fmt(int(r_.get('amount') or 0))} ریال در روز"
+                      for r_ in byr[:8]] or ['هنوز تعریف نشده'], self.v_base_year_rules),
+        section_card(f'قواعد عیدی ({len(eid)})', '#be185d',
+                     [f"{r_.get('min_days')} تا {r_.get('max_days')} روز • حداقل مزد روزانه {fmt(int(r_.get('daily_min_wage') or 0))}"
+                      for r_ in eid[:4]] or ['هنوز تعریف نشده'], self.v_eid_rules),
+        section_card(f'استثنای کسر کار ({n_exc})', '#dc2626',
+                     ['مزایایی که برای فرد یا دپارتمان خاص از کسر کار/غیبت معاف‌اند'], self.v_absent_exceptions, 'تعریف استثنا'),
+        section_card(f'تعطیلات رسمی ({n_hol})', '#d97706', ['تعطیلات ثابت، مذهبی و سفارشی این سال'],
+                     self.v_ts_holidays),
+        section_card(f'برنامه‌های کاری ({n_sch})', '#475569', ['ساعت هر روز هفته و اختصاص به پرسنل'], self.v_ts_schedules),
     ]
     return ft.ListView(items, spacing=8, expand=True, padding=pad_only(bottom=24))
 
@@ -12081,20 +12588,92 @@ def _ts_repl_suggestions(day, ctx, sched, recs):
     return out
 
 
+
+# ───────── انتخاب وضعیت روز: کاشی‌های رنگی ─────────
+def ts_status_ui(kind):
+    off = kind in ('rest', 'holiday')
+    return [
+        ('', 'ACCESS_TIME', 'SCHEDULE', 'ثبت از روی ساعت', 'ورود و خروج را خودم می‌نویسم (۲۴ ساعته)', '#1e3a5f'),
+        ('present', 'CHECK_CIRCLE', 'DONE_ALL', 'حاضر کامل', 'روز کامل طبق برنامه، بدون نوشتن ساعت', '#16a34a'),
+        ('mission', 'FLIGHT_TAKEOFF', 'WORK', 'مأموریت', 'روز کامل؛ بدون کسر کار و اضافه‌کاری', '#2563eb'),
+        ('leave', 'BEACH_ACCESS', 'EVENT_AVAILABLE', 'مرخصی استحقاقی', 'از مانده مرخصی سالانه کم می‌شود', '#0d9488'),
+        ('sick', 'LOCAL_HOSPITAL', 'HEALING', 'مرخصی استعلاجی', 'با گواهی پزشک؛ شماره گواهی را ثبت کنید', '#db2777'),
+        ('unpaid', 'MONEY_OFF', 'BLOCK', 'مرخصی بدون حقوق', 'این روز در کارکرد نمی‌آید', '#d97706'),
+        ('absent', 'PERSON_OFF', 'CANCEL', 'غیبت', 'روز کارکرد حساب نمی‌شود', '#dc2626'),
+        ('rest', 'HOTEL', 'BED', 'استراحت هفتگی', 'ثبت دستی برای شیفتی‌ها', '#64748b'),
+        ('closed', 'STOREFRONT', 'BUSINESS', 'تعطیلی کارگاه',
+         ('این روز استراحت/تعطیل است؛ با انتخاب، یک روز عادی و کامل ثبت می‌شود' if off
+          else 'کارگاه تعطیل بوده؛ روز عادی و کامل حساب می‌شود'), '#7c3aed'),
+    ]
+
+
+def ts_status_picker(f, kind, on_change):
+    """شبکه‌ی کاشی‌های انتخاب وضعیت؛ (کنترل، تابع set(key)) را برمی‌گرداند."""
+    sel = {'v': f.get('status') or ''}
+    refs = {}
+    ui = ts_status_ui(kind)
+
+    def paint():
+        for key, (cont, chk, col) in refs.items():
+            on = sel['v'] == key
+            cont.bgcolor = alpha(col, 0x2e) if on else alpha(col, 0x0c)
+            cont.border = border_all(2 if on else 1, col if on else alpha(col, 0x44))
+            chk.visible = on
+            try:
+                cont.update()
+            except Exception:
+                pass
+
+    def pick(key):
+        sel['v'] = key
+        f['status'] = key
+        paint()
+        on_change()
+
+    def set_(key):
+        sel['v'] = key
+        f['status'] = key
+        paint()
+
+    def tile(item):
+        key, ic, fb, title, sub, col = item
+        on = sel['v'] == key
+        chk = ft.Icon(_ic('CHECK_CIRCLE', 'CHECK'), size=16, color=col, visible=on)
+        cont = ft.Container(
+            ft.Row([
+                ft.Container(ft.Icon(_ic(ic, fb), size=18, color='#ffffff'), width=34, height=34, bgcolor=col,
+                             border_radius=17, alignment=center()),
+                ft.Column([txt(title, 11, True), txt(sub, 8, color=T()['muted'])], spacing=1, expand=True),
+                chk], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=pad_sym(8, 7), border_radius=12, ink=True, expand=True,
+            bgcolor=alpha(col, 0x2e) if on else alpha(col, 0x0c),
+            border=border_all(2 if on else 1, col if on else alpha(col, 0x44)),
+            on_click=lambda e, k=key: pick(k))
+        refs[key] = (cont, chk, col)
+        return cont
+    tiles = [tile(it) for it in ui]
+    rows = [ft.Row(tiles[i:i + 2], spacing=6) for i in range(0, len(tiles), 2)]
+    if len(tiles) % 2:
+        rows[-1].controls.append(ft.Container(expand=True))
+    return ft.Column([txt('وضعیت این روز را انتخاب کنید', 11, True)] + rows, spacing=6), set_
+
 def _ts_day_dialog(self, ctx, emp, day, res, sched, recs):
     """ویرایش یک روز؛ نتیجه محاسبه و علت‌ها هم‌زمان با تایپ دیده می‌شود."""
     P, A, MUTED = T()['primary'], T()['accent'], T()['muted']
     key = day['date']
     raw = dict(recs.get(key) or {})
     f = {k: (raw.get(k) or '') for k in ('status', 'in1', 'out1', 'in2', 'out2', 'repl_date', 'note')}
-    f['leave_min'] = raw.get('leave_min') or ''
+    f['sick_no'] = raw.get('sick_no') or ''
+    f['sick_ok'] = int(raw.get('sick_ok') or 0)
+    f['ot_ok'] = int(raw.get('ot_ok') or 0)
+    f['leave_min'] = ts_hm(int(raw.get('leave_min') or 0)) if int(raw.get('leave_min') or 0) else ''
     kind = day['kind']
     ctl = {}
     out_box = ft.Column(spacing=4, tight=True)
     err = txt('', 10, True, '#c0392b')
 
     def preview(e=None):
-        for k_ in ('in1', 'out1', 'in2', 'out2', 'repl_date', 'note', 'leave_min'):
+        for k_ in ('in1', 'out1', 'in2', 'out2', 'repl_date', 'note', 'leave_min', 'sick_no'):
             if k_ in ctl:
                 f[k_] = ctl[k_].value or ''
         out_box.controls.clear()
@@ -12134,14 +12713,13 @@ def _ts_day_dialog(self, ctx, emp, day, res, sched, recs):
             pass
 
     def T_(k, label, hint='08:00', w=84):
-        c = tf(label, f[k], hint=hint, width=w, kb=True, on_change=preview, size=13)
+        c = time_tf(label, f[k], on_change=preview, hint=hint, width=w, size=13)
         ctl[k] = c
         return c
 
-    status_dd = dd('وضعیت روز', TS_STATUSES, f['status'], lambda e: (f.update(status=e.control.value or ''),
-                                                                    preview()), expand=True, size=12)
+    status_dd, set_status = ts_status_picker(f, kind, preview)
     ctl['status'] = status_dd
-    ctl['leave_min'] = tf('مرخصی ساعتی (دقیقه)', f['leave_min'], kb=True, on_change=preview, width=130, size=12)
+    ctl['leave_min'] = time_tf('مرخصی استحقاقی ساعتی (ساعت:دقیقه)', f['leave_min'], on_change=preview, hint='02:00', size=12, expand=True)
     ctl['note'] = tf('یادداشت', f['note'], on_change=preview, expand=True, size=12)
     ctl['repl_date'] = tf('روز استراحت جایگزین (مثلاً ' + jkey_add(key, 1) + ')', f['repl_date'], on_change=preview,
                           expand=True, size=12)
@@ -12155,7 +12733,7 @@ def _ts_day_dialog(self, ctx, emp, day, res, sched, recs):
                       ('in2', ''), ('out2', '')):
             ctl[k_].value = v
         f['status'] = ''
-        status_dd.value = ''
+        set_status('')
         try:
             for c in ctl.values(): c.update()
         except Exception:
@@ -12173,9 +12751,12 @@ def _ts_day_dialog(self, ctx, emp, day, res, sched, recs):
         preview()
 
     def clear_day(e):
-        for k_ in ('in1', 'out1', 'in2', 'out2', 'repl_date', 'note', 'leave_min'):
+        for k_ in ('in1', 'out1', 'in2', 'out2', 'repl_date', 'note', 'leave_min', 'sick_no'):
             ctl[k_].value = ''
-        status_dd.value = ''
+        for sw_ in (sw_sick, sw_ot):
+            sw_.value = False
+        f.update(sick_ok=0, ot_ok=0)
+        set_status('')
         f['status'] = ''
         try:
             for c in ctl.values(): c.update()
@@ -12230,6 +12811,16 @@ def _ts_day_dialog(self, ctx, emp, day, res, sched, recs):
                                  bgcolor=alpha(A, 0x44), ink=True, on_click=lambda e, k_=k_: pick_repl(k_))
                     for k_, lbl in sug], spacing=6, wrap=True, run_spacing=6)], spacing=4),
             padding=8, border_radius=10, bgcolor=alpha(P, 0x0d)))
+    ctl['sick_no'] = tf('شماره گواهی استعلاجی', f['sick_no'], on_change=preview, expand=True, size=12)
+    sw_sick = K(ft.Switch, label='تأیید تأمین اجتماعی دریافت شد', value=bool(f['sick_ok']), active_color=A,
+                on_change=lambda e: (f.update(sick_ok=1 if e.control.value else 0), preview()))
+    sw_ot = K(ft.Switch, label='تأیید مدیر برای اضافه‌کاری بیش از سقف روزانه', value=bool(f['ot_ok']), active_color=A,
+              on_change=lambda e: (f.update(ot_ok=1 if e.control.value else 0), preview()))
+    rows.append(ft.Container(ft.Column([txt('🏥 مرخصی استعلاجی (در صورت انتخاب وضعیت «استعلاجی»)', 10, True, P),
+                                        ctl['sick_no'], sw_sick], spacing=4),
+                             padding=8, border_radius=10, bgcolor=alpha(P, 0x0d)))
+    rows.append(sw_ot)
+    ctl['sw_sick'], ctl['sw_ot'] = sw_sick, sw_ot
     rows += [ctl['note'], ft.Divider(height=1), txt('نتیجه محاسبه و علت‌ها', 11, True), out_box, err]
     d = ft.AlertDialog(
         modal=True, title=ft.Text('ثبت تردد روز', size=13),
@@ -12535,6 +13126,7 @@ def _app_v_ts_hub(self):
         tile(_ic('CALENDAR_MONTH'), 'تقویم تردد پرسنل', 'ورود و خروج، مرخصی، مأموریت، روز جایگزین', self.v_timesheet),
         tile(_ic('EVENT'), 'تعطیلات رسمی', 'تعطیلات سال + پیشنهاد مذهبی + تعطیلی سفارشی', self.v_ts_holidays),
         tile(_ic('SCHEDULE'), 'برنامه‌های کاری', 'ساعت هر روز هفته، شروع کار، اختصاص به پرسنل', self.v_ts_schedules),
+        tile(_ic('BEACH_ACCESS', 'EVENT_AVAILABLE'), 'گزارش مرخصی', 'ماهانه و سالانه، سقف مرخصی، مانده و چاپ', self.v_ts_leave),
         tile(_ic('PASSWORD', 'LOCK'), 'PIN پرسنل', 'ورود پرسنل به وب‌اپ برای ثبت ورود/خروج', self.v_ts_pins),
         tile(_ic('WIFI'), 'وب‌اپ تردد (لوکال‌هاست)', web, self.v_webshare),
         tile(_ic('PERCENT'), 'قواعد تایم‌شیت', 'تأخیر مجاز، شب‌کاری، تهاتر، روز جایگزین، مرخصی (در نرخ‌ها)', self.v_rates),
@@ -12656,9 +13248,9 @@ def _app_v_ts_schedules(self):
     def edit(s):
         names = TS_WEEKDAYS
         nm = tf('نام برنامه', s['name'] if s else '', expand=True, size=13)
-        st_ = tf('ساعت شروع', s['start'] if s else '08:00', hint='08:00', width=110, size=13, kb=True)
+        st_ = time_tf('ساعت شروع', s['start'] if s else '08:00', hint='08:00', width=110, size=13)
         br = tf('استراحت خودکار (دقیقه)', s['break'] if s else '', kb=True, width=170, size=12)
-        days = [tf(names[i], ts_hm(s['mins'][i]) if s and s['mins'][i] else '', hint='8:00', kb=True, width=96, size=13)
+        days = [time_tf(names[i], ts_hm(s['mins'][i]) if s and s['mins'][i] else '', hint='08:00', width=96, size=13)
                 for i in range(7)]
         er = txt('', 10, True, '#c0392b')
 
@@ -12986,6 +13578,591 @@ def _app_emp_detail(self, emp):
 
 App.emp_detail = _app_emp_detail
 # <<<UI_D_END>>>
+
+
+# <<<UI_E_BEGIN>>>
+# ═══════════════════════════════════════════════════════════════════════════
+#  گزارش مرخصی (ماهانه/سالانه) + مدیریت فایل‌ها و پشتیبان
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+# ───────────────────────── گزارش مرخصی ─────────────────────────
+def ts_leave_report_blocks(company, year, month, rows, pol):
+    """سند چاپی گزارش مرخصی؛ month=0 یعنی گزارش سالانه."""
+    title = (f"گزارش مرخصی — {MONTHS[month - 1]} {year}" if month else f"گزارش سالانه مرخصی — سال {year}")
+    cap = float(pol.get('ts_leave_month_cap') or 0)
+    sub = (f"سهمیه سالانه {pol['ts_leave_quota']} روز" +
+           (f" • سقف ماهانه {cap:g} روز" if cap else ' • بدون سقف ماهانه') +
+           (' • مرخصی ساعتی از مانده کم می‌شود' if int(pol.get('ts_leave_hourly', 1)) else ''))
+    tr = []
+    if month:
+        hdr = ['ردیف', 'نام و نام خانوادگی', 'مرخصی (روز)', 'ساعتی', 'جمع مصرف', 'استعلاجی', 'بدون حقوق',
+               'مازاد سقف', 'سهمیه سال', 'مانده سال']
+        widths = [0.05, 0.22, 0.09, 0.09, 0.09, 0.09, 0.09, 0.09, 0.095, 0.095]
+        for i, r in enumerate(rows, 1):
+            e = r['emp']
+            tr.append([str(i), f"{e.get('first_name', '')} {e.get('last_name', '')}", f"{r['leave']:g}",
+                       ts_hm(r['hour_min']), f"{r['used']:g}", f"{r['sick']:g}", f"{r['unpaid']:g}",
+                       f"{r['excess']:g}" if r['excess'] else '', f"{r['quota']:g}", f"{r['remain']:g}"])
+        aligns = ['C', 'R'] + ['C'] * 8
+    else:
+        hdr = ['ردیف', 'نام'] + [str(i) for i in range(1, 13)] + ['جمع', 'سهمیه', 'مانده']
+        widths = [0.04, 0.16] + [0.05] * 12 + [0.06, 0.06, 0.07]
+        for i, r in enumerate(rows, 1):
+            e = r['emp']
+            tr.append([str(i), f"{e.get('first_name', '')} {e.get('last_name', '')}"] +
+                      [(f"{r['per'][m]['used']:g}" if r['per'][m]['used'] else '') for m in range(1, 13)] +
+                      [f"{r['year_used']:g}", f"{r['quota']:g}", f"{r['remain']:g}"])
+        aligns = ['C', 'R'] + ['C'] * 15
+    return [
+        ('header', company.get('name') or APP_TITLE, title),
+        ('note', sub),
+        ('table', hdr, tr, widths, None, 16, aligns),
+        ('spacer', 10),
+        ('sign', ['تأیید سرپرست', 'تأیید مدیر'], 90),
+        ('note', f"{APP_TITLE} • {jalali_today_str()}"),
+    ]
+
+
+def export_leave_csv(year, month, rows):
+    if month:
+        hdr = ['ردیف', 'نام', 'فامیل', 'مرخصی روز', 'مرخصی ساعتی', 'جمع مصرف', 'استعلاجی', 'بدون حقوق',
+               'مازاد سقف', 'سهمیه سال', 'مانده سال']
+        data = [[i, r['emp'].get('first_name', ''), r['emp'].get('last_name', ''), r['leave'], ts_hm(r['hour_min']),
+                 r['used'], r['sick'], r['unpaid'], r['excess'], r['quota'], r['remain']]
+                for i, r in enumerate(rows, 1)]
+        name = f"leave_{year}_{month:02d}.csv"
+    else:
+        hdr = ['ردیف', 'نام', 'فامیل'] + [f"ماه {m}" for m in range(1, 13)] + ['جمع', 'سهمیه', 'مانده']
+        data = [[i, r['emp'].get('first_name', ''), r['emp'].get('last_name', '')] +
+                [r['per'][m]['used'] for m in range(1, 13)] + [r['year_used'], r['quota'], r['remain']]
+                for i, r in enumerate(rows, 1)]
+        name = f"leave_{year}_yearly.csv"
+    path = os.path.join(export_dir(), name)
+    write_csv(path, hdr, data)
+    return path
+
+
+def _app_v_ts_leave(self):
+    P, A, MUTED = T()['primary'], T()['accent'], T()['muted']
+    y = self.year
+    st = {'month': 0, 'cache': None}
+    holder = ft.Column(spacing=6)
+    head = ft.Column(spacing=6)
+
+    def load():
+        if st['cache'] is None:
+            st['cache'] = ts_leave_report(self.db, self.cid, y)
+        return st['cache']
+
+    def render():
+        rows, pol = load()
+        m = st['month']
+        if m:
+            rows, pol = ts_leave_report(self.db, self.cid, y, m, [r['emp'] for r in rows])
+        holder.controls.clear()
+        cap = float(pol.get('ts_leave_month_cap') or 0)
+        tot_used = sum(r['used'] for r in rows)
+        holder.controls.append(card(ft.Column([
+            txt(f"سهمیه سالانه {pol['ts_leave_quota']} روز" + (f" • سقف ماهانه {cap:g} روز" if cap else ' • بدون سقف ماهانه'),
+                11, True),
+            txt(f"جمع مصرف {'این ماه' if m else 'سال'}: {tot_used:g} روز • "
+                f"مرخصی ساعتی {'کم می‌شود' if int(pol.get('ts_leave_hourly', 1)) else 'از مانده کم نمی‌شود'}",
+                10, color=MUTED)], spacing=3), padding=10))
+        for r in rows:
+            e = r['emp']
+            name = f"{e.get('first_name', '')} {e.get('last_name', '')}"
+            low = r['remain'] < 0
+            if m:
+                chips = [('مرخصی', f"{r['leave']:g} روز", T()['success']), ('ساعتی', ts_hm(r['hour_min']), A),
+                         ('جمع مصرف', f"{r['used']:g}", P)]
+                if r['sick']: chips.append(('استعلاجی', f"{r['sick']:g}", '#0f766e'))
+                if r['unpaid']: chips.append(('بدون حقوق', f"{r['unpaid']:g}", '#c0392b'))
+                if r['excess']: chips.append(('مازاد سقف', f"{r['excess']:g}", '#c0392b'))
+                body = ft.Row([ft.Container(ft.Column([txt(a, 8, color=MUTED), txt(b, 12, True, c)], spacing=0,
+                                                       horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                                            padding=pad_sym(8, 4), bgcolor=alpha(c, 0x15), border_radius=8)
+                               for a, b, c in chips], spacing=6, wrap=True, run_spacing=6)
+            else:
+                body = ft.Row([ft.Container(ft.Column([txt(str(mm), 8, color=MUTED),
+                                                       txt(f"{r['per'][mm]['used']:g}" if r['per'][mm]['used'] else '·', 10,
+                                                           bool(r['per'][mm]['used']),
+                                                           T()['success'] if r['per'][mm]['used'] else MUTED)], spacing=0,
+                                                      horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                                            width=24, padding=pad_sym(2, 3), border_radius=6,
+                                            bgcolor=alpha(T()['success'], 0x18) if r['per'][mm]['used'] else None)
+                               for mm in range(1, 13)], spacing=2, wrap=True, run_spacing=2)
+            holder.controls.append(card(ft.Column([
+                ft.Row([txt(name, 12, True, expand=True),
+                        txt(f"مانده سال: {r['remain']:g} از {r['quota']:g}", 10, True,
+                            '#c0392b' if low else T()['success'])]),
+                body], spacing=6), padding=10))
+        if not rows:
+            holder.controls.append(txt('پرسنل فعالی وجود ندارد.', 11, color=MUTED))
+        try: holder.update()
+        except Exception: pass
+
+    def on_month(e):
+        st['month'] = int(e.control.value or 0)
+        render()
+
+    def do_print(e):
+        rows, pol = load()
+        m = st['month']
+        if m:
+            rows, pol = ts_leave_report(self.db, self.cid, y, m, [r['emp'] for r in rows])
+        comp = self.db.q1("SELECT * FROM companies WHERE id=?", (self.cid,)) or {}
+        self.show_doc(ts_leave_report_blocks(comp, y, m, rows, pol), f"leave_{y}_{m or 'yearly'}", 'گزارش مرخصی')
+
+    def do_csv(e):
+        rows, pol = load()
+        m = st['month']
+        if m:
+            rows, pol = ts_leave_report(self.db, self.cid, y, m, [r['emp'] for r in rows])
+        self.file_dialog(export_leave_csv(y, m, rows), '✅ گزارش مرخصی (CSV)')
+
+    mdd = dd('دوره گزارش', [(0, f'سالانه ({y})')] + [(i, f"{MONTHS[i - 1]} {y}") for i in range(1, 13)],
+             0, on_select=on_month, expand=True)
+    head.controls += [
+        ft.Row([mdd], spacing=6),
+        ft.Row([gbtn('🖨 چاپ / پیش‌نمایش', _ic('PRINT'), do_print, P, expand=True),
+                obtn('CSV', _ic('TABLE_CHART'), do_csv, expand=True)], spacing=6),
+        obtn('تنظیم سقف و قواعد مرخصی', _ic('TUNE', 'SETTINGS'), lambda e: self.push('نرخ‌ها و قواعد', self.v_rates), height=36),
+    ]
+    render()
+    return ft.ListView([head, holder], spacing=8, expand=True, padding=pad_only(bottom=24))
+
+
+App.v_ts_leave = _app_v_ts_leave
+
+
+# ───────────────────────── ابزارهای فایل ─────────────────────────
+def _fname_clean(s, default='file'):
+    s = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', ' ', str(s or '')).strip().strip('.')
+    s = re.sub(r'\s+', '_', s)
+    return s[:80] or default
+
+
+def _unique_path(path):
+    base, ext = os.path.splitext(path)
+    p, n = path, 2
+    while os.path.exists(p):
+        p = f"{base}_{n}{ext}"
+        n += 1
+    return p
+
+
+def file_rename(path, new_name):
+    """تغییر نام فایل در همان پوشه با حفظ پسوند؛ مسیر جدید را برمی‌گرداند."""
+    d, old = os.path.split(path)
+    ext = os.path.splitext(old)[1]
+    stem = str(new_name or '').strip()
+    if ext and stem.lower().endswith(ext.lower()):
+        stem = stem[:-len(ext)]
+    dst = os.path.join(d, _fname_clean(stem, os.path.splitext(old)[0]) + ext)
+    if os.path.abspath(dst) == os.path.abspath(path):
+        return path
+    dst = _unique_path(dst)
+    os.rename(path, dst)
+    return dst
+
+
+_FILE_KINDS = {
+    '.pdf': ('PDF', 'PICTURE_AS_PDF', '#c0392b'), '.png': ('تصویر', 'IMAGE', '#0891b2'),
+    '.jpg': ('تصویر', 'IMAGE', '#0891b2'), '.jpeg': ('تصویر', 'IMAGE', '#0891b2'),
+    '.csv': ('جدول CSV', 'TABLE_CHART', '#16a34a'), '.xlsx': ('اکسل', 'TABLE_CHART', '#16a34a'),
+    '.db': ('پشتیبان دیتابیس', 'STORAGE', '#7c3aed'),
+}
+
+
+def _file_kind(path):
+    return _FILE_KINDS.get(os.path.splitext(path)[1].lower(), ('سایر', 'INSERT_DRIVE_FILE', '#64748b'))
+
+
+def list_export_files():
+    d = export_dir()
+    out = []
+    try:
+        for n in os.listdir(d):
+            p = os.path.join(d, n)
+            if not os.path.isfile(p) or n.startswith('.') or n.endswith(('-wal', '-shm')):
+                continue
+            stt = os.stat(p)
+            out.append(dict(path=p, name=n, size=stt.st_size, mtime=stt.st_mtime, kind=_file_kind(p)[0]))
+    except Exception:
+        log_error(traceback.format_exc())
+    out.sort(key=lambda r: r['mtime'], reverse=True)
+    return out
+
+
+def _fmt_mtime(ts):
+    try:
+        dt = datetime.fromtimestamp(ts)
+        jy, jm, jd = g2j(dt.year, dt.month, dt.day)
+        return f"{jy}/{jm:02d}/{jd:02d} {dt.hour:02d}:{dt.minute:02d}"
+    except Exception:
+        return ''
+
+
+def _ask_name_dialog(self, title, default, on_ok, label='نام فایل (بدون پسوند)'):
+    f = tf(label, default, expand=True, size=13)
+    er = txt('', 10, True, '#c0392b')
+
+    def ok(e):
+        v = (f.value or '').strip()
+        if not v:
+            er.value = 'نام را بنویسید'
+            try: er.update()
+            except Exception: pass
+            return
+        self.close_dlg(dg)
+        on_ok(v)
+    dg = ft.AlertDialog(modal=True, title=ft.Text(title, size=13),
+                        content=ft.Container(ft.Column([f, er], spacing=6, tight=True),
+                                             width=min((self.page.width or 400) - 40, 380)),
+                        actions=[tbtn('انصراف', lambda e: self.close_dlg(dg)),
+                                 gbtn('تأیید', None, ok, T()['success'])])
+    self.open_dlg(dg)
+
+
+# ───────────── پنجره «فایل آماده شد» با تغییر نام ─────────────
+def _app_file_dialog(self, path, title='فایل آماده است', count=None):
+    st = {'path': path}
+    label = f'{title} ({count} فیش)' if count else title
+    name_tf = tf('نام فایل (قابل ویرایش)', os.path.splitext(os.path.basename(path))[0], expand=True, size=12)
+    loc = txt('', 9, color=T()['muted'], selectable=True)
+
+    def refresh_loc():
+        loc.value = ('📁 ' + st['path'])
+        try: loc.update()
+        except Exception: pass
+    refresh_loc()
+
+    def do_rename(ev):
+        try:
+            new = file_rename(st['path'], name_tf.value or '')
+            if new != st['path']:
+                st['path'] = new
+                name_tf.value = os.path.splitext(os.path.basename(new))[0]
+                try: name_tf.update()
+                except Exception: pass
+                self.toast('✅ نام فایل تغییر کرد')
+            refresh_loc()
+        except Exception as ex:
+            log_error(traceback.format_exc()); self.toast(f'تغییر نام ممکن نشد: {ex}', True)
+
+    async def do_open(ev):
+        if not await open_document(self.page, st['path']):
+            self.toast('باز کردن مستقیم ممکن نشد. از «اشتراک‌گذاری» یا مسیر فایل استفاده کنید.', True)
+
+    async def do_share(ev):
+        r = await share_document(self.page, st['path'], label)
+        if r == 'saved':
+            self.toast('فایل در پوشه دانلودها ذخیره شد؛ از همان‌جا می‌توانید ارسال کنید.')
+        elif not r:
+            self.toast('اشتراک‌گذاری ممکن نشد؛ فایل در مسیر نمایش‌داده‌شده ذخیره شده است.', True)
+
+    async def do_copy(ev):
+        self.toast('مسیر کپی شد' if await _copy_text(self.page, st['path']) else 'کپی ممکن نشد', False)
+
+    btns = [gbtn('📤 اشتراک‌گذاری', _ic('SHARE'), do_share, T()['primary']),
+            gbtn('📂 باز کردن', _ic('OPEN_IN_NEW'), do_open, T()['success'])]
+    if path.lower().endswith('.png'):
+        btns.append(gbtn('👁 پیش‌نمایش', _ic('VISIBILITY'),
+                         lambda ev: (self.close_dlg(d), self.preview_image(st['path'], label)), T()['info']))
+    d = ft.AlertDialog(
+        modal=True, title=ft.Text(label, size=13),
+        content=ft.Container(ft.Column([
+            txt('فایل ساخته و ذخیره شد.', 11, True),
+            ft.Row(btns, spacing=6, wrap=True, run_spacing=6),
+            ft.Row([name_tf, iconbtn(_ic('DRIVE_FILE_RENAME_OUTLINE', 'EDIT'), do_rename, T()['accent'], 20, 'ثبت نام جدید')],
+                   spacing=4),
+            txt('پس از تغییر نام، دکمه مداد را بزنید.', 9, color=T()['muted']),
+            ft.Container(loc, bgcolor=T()['bg'], padding=8, border_radius=8),
+            ft.Row([tbtn('📋 کپی مسیر', do_copy),
+                    tbtn('🗂 فایل‌ها و پشتیبان', lambda ev: (self.close_dlg(d), self.push('فایل‌ها و پشتیبان', self.v_files)))],
+                   wrap=True, spacing=4),
+        ], spacing=8, tight=True, scroll=ft.ScrollMode.AUTO), width=min((self.page.width or 400) - 32, 400)),
+        actions=[tbtn('بستن', lambda e: self.close_dlg(d))])
+    self.open_dlg(d)
+
+
+App.file_dialog = _app_file_dialog
+
+
+# ───────────── صفحه «فایل‌ها و پشتیبان» ─────────────
+def _app_v_files(self):
+    P, A, MUTED = T()['primary'], T()['accent'], T()['muted']
+    st = self.__dict__.setdefault('_files_st', {'flt': 'all'})
+    listing = ft.Column(spacing=6)
+    usage = txt('', 11, True)
+    FILTERS = [('all', 'همه'), ('PDF', 'PDF'), ('تصویر', 'تصویر'), ('جدول CSV', 'CSV'), ('پشتیبان دیتابیس', 'پشتیبان')]
+
+    def rebuild():
+        files = list_export_files()
+        n, sz = len(files), sum(f['size'] for f in files)
+        usage.value = f"{n} فایل • {human_size(sz)}"
+        listing.controls.clear()
+        shown = [f for f in files if st['flt'] == 'all' or f['kind'] == st['flt']]
+        for f in shown[:150]:
+            listing.controls.append(file_card(f))
+        if not shown:
+            listing.controls.append(txt('فایلی در این دسته نیست. فیش، قرارداد، تایم‌شیت و پشتیبان‌ها اینجا جمع می‌شوند.',
+                                        10, color=MUTED))
+        if len(shown) > 150:
+            listing.controls.append(txt(f'… و {len(shown) - 150} فایل دیگر (برای دیدن، پاکسازی کنید)', 9, color=MUTED))
+        try:
+            listing.update(); usage.update()
+        except Exception:
+            pass
+
+    def file_card(f):
+        kind, icon, color = _file_kind(f['path'])
+        p = f['path']
+
+        async def op(ev, p=p):
+            if not await open_document(self.page, p):
+                self.toast('باز کردن مستقیم ممکن نشد؛ از اشتراک استفاده کنید.', True)
+
+        async def sh(ev, p=p):
+            r = await share_document(self.page, p, os.path.basename(p))
+            if not r:
+                self.toast('اشتراک‌گذاری ممکن نشد', True)
+
+        def rn(ev, p=p):
+            def go(newname):
+                try:
+                    file_rename(p, newname)
+                    self.toast('✅ نام تغییر کرد')
+                except Exception as ex:
+                    self.toast(f'تغییر نام ممکن نشد: {ex}', True)
+                rebuild()
+            _ask_name_dialog(self, 'تغییر نام فایل', os.path.splitext(os.path.basename(p))[0], go)
+
+        def rm(ev, p=p):
+            def go():
+                try:
+                    os.remove(p); self.toast('🗑 حذف شد')
+                except Exception as ex:
+                    self.toast(f'حذف ممکن نشد: {ex}', True)
+                rebuild()
+            self.confirm(f"فایل «{os.path.basename(p)}» برای همیشه حذف شود؟", go, 'حذف فایل')
+
+        acts = [iconbtn(_ic('OPEN_IN_NEW'), op, T()['success'], 18, 'باز کردن'),
+                iconbtn(_ic('SHARE'), sh, P, 18, 'اشتراک'),
+                iconbtn(_ic('DRIVE_FILE_RENAME_OUTLINE', 'EDIT'), rn, A, 18, 'تغییر نام'),
+                iconbtn(_ic('DELETE'), rm, '#c0392b', 18, 'حذف')]
+        if p.lower().endswith('.db'):
+            acts.insert(0, iconbtn(_ic('RESTORE'), lambda ev, p=p: ask_restore(p), '#7c3aed', 18, 'بازگردانی'))
+        return card(ft.Column([
+            ft.Row([ft.Icon(_ic(icon, 'INSERT_DRIVE_FILE'), color=color, size=22),
+                    ft.Column([txt(f['name'], 11, True, selectable=True),
+                               txt(f"{kind} • {human_size(f['size'])} • {_fmt_mtime(f['mtime'])}", 9, color=MUTED)],
+                              spacing=1, expand=True)], spacing=8),
+            ft.Row(acts, spacing=0, alignment=ft.MainAxisAlignment.END)], spacing=2), padding=8)
+
+    # ── پشتیبان
+    def ask_restore(p):
+        def go():
+            try:
+                self.db.restore(p)
+                self.cid = self.db.active_company()
+                self.toast('✅ بازگردانی انجام شد'); self.go_root(0)
+            except Exception as ex:
+                log_error(traceback.format_exc()); self.info('خطا در بازگردانی', str(ex))
+        self.confirm('اطلاعات فعلی با این پشتیبان جایگزین می‌شود (نسخه فعلی به‌صورت خودکار نگه داشته می‌شود). ادامه؟',
+                     go, 'بازگردانی')
+
+    def make_backup(e=None):
+        default = f"backup_{datetime.now():%Y%m%d_%H%M%S}"
+
+        def go(name):
+            try:
+                path = self.db.backup()
+                nm = _fname_clean(name)
+                if nm != os.path.splitext(os.path.basename(path))[0]:
+                    path = file_rename(path, nm)
+                self.file_dialog(path, '✅ پشتیبان ساخته شد')
+                rebuild()
+            except Exception as ex:
+                log_error(traceback.format_exc()); self.info('خطا', str(ex))
+        _ask_name_dialog(self, 'ساخت پشتیبان کامل', default, go, 'نام پشتیبان')
+
+    async def share_latest(ev):
+        try:
+            path = self.db.backup()
+        except Exception as ex:
+            log_error(traceback.format_exc()); self.info('خطا', str(ex)); return
+        r = await share_document(self.page, path, 'پشتیبان عرفان حساب')
+        if r == 'saved':
+            self.toast('پشتیبان در پوشه دانلودها ذخیره شد؛ از همان‌جا ارسال کنید.')
+        elif not r:
+            self.toast('اشتراک‌گذاری ممکن نشد؛ پشتیبان ذخیره شد.', True)
+        rebuild()
+
+    def _import_bytes(data, fname='import'):
+        tmp = os.path.join(export_dir(), f"imported_{datetime.now():%Y%m%d_%H%M%S}.db")
+        with open(tmp, 'wb') as fh:
+            fh.write(data)
+        try:
+            t = sqlite3.connect(tmp)
+            try: t.execute("SELECT 1 FROM companies LIMIT 1")
+            finally: t.close()
+        except Exception:
+            try: os.remove(tmp)
+            except OSError: pass
+            self.toast('این فایل پشتیبان معتبر عرفان حساب نیست.', True)
+            return
+        rebuild()
+        ask_restore(tmp)
+
+    def _handle_files(files):
+        if not files:
+            return
+        data = _picked_bytes(files[0])
+        if not data:
+            self.toast('محتوای فایل دریافت نشد.', True); return
+        _import_bytes(data)
+
+    async def pick_db(ev):
+        try:
+            picker = K(ft.FilePicker, on_result=lambda e: _handle_files(getattr(e, 'files', None) or []))
+            _attach_picker(self.page, picker)
+            self.page.update()
+            result = picker.pick_files(allow_multiple=False, with_data=True)
+            if inspect.isawaitable(result):
+                result = await result
+            if result:
+                files = result if isinstance(result, (list, tuple)) else getattr(result, 'files', [])
+                _handle_files(files)
+        except Exception:
+            log_error(traceback.format_exc())
+            self.toast('انتخاب فایل انجام نشد؛ فایل پشتیبان را در پوشه برنامه بگذارید و از فهرست بازگردانی کنید.', True)
+
+    def clean(days):
+        def go():
+            k, freed = cleanup_exports(days)
+            self.toast(f"🧹 {k} فایل پاک شد • {human_size(freed)} آزاد شد")
+            rebuild()
+        self.confirm(f"PDF/PNG/CSV قدیمی‌تر از {days} روز پاک شوند؟ (پشتیبان‌ها پاک نمی‌شوند، جز موارد بیش از ۱۰ تای آخر با نام پیش‌فرض)",
+                     go, 'پاکسازی')
+
+    def chip(key, lbl):
+        on = st['flt'] == key
+
+        def pick(e, key=key):
+            st['flt'] = key
+            self.refresh()
+        return ft.Container(txt(lbl, 10, True, '#ffffff' if on else P), padding=pad_sym(10, 5), border_radius=14,
+                            bgcolor=P if on else alpha(P, 0x18), on_click=pick, ink=True)
+
+    controls = [
+        card(ft.Column([
+            txt('💾 پشتیبان و انتقال دیتابیس', 13, True),
+            txt('برای انتقال به گوشی/سیستم دیگر: «اشتراک پشتیبان» را بزنید و فایل را (تلگرام، ایمیل، ...) بفرستید؛ در دستگاه جدید '
+                '«بازگردانی از فایل» را انتخاب کنید.', 9, color=MUTED),
+            ft.Row([gbtn('ساخت پشتیبان', _ic('BACKUP'), make_backup, T()['success'], expand=True),
+                    gbtn('اشتراک پشتیبان', _ic('SHARE'), share_latest, P, expand=True)], spacing=6),
+            obtn('بازگردانی از فایل (انتخاب از حافظه)', _ic('UPLOAD_FILE', 'FOLDER_OPEN'), pick_db, height=38),
+        ], spacing=8), padding=12),
+        card(ft.Column([
+            txt('🗂 محل ذخیره فایل‌ها', 12, True),
+            txt(export_dir(), 10, color=MUTED, selectable=True),
+            txt('در اندروید ترجیحاً در Download/ErfanHesab ذخیره می‌شود و در غیر این صورت در پوشه داخلی برنامه '
+                '(برای دسترسی بیرونی از «اشتراک» استفاده کنید).', 9, color=MUTED),
+            usage,
+            ft.Row([obtn('پاکسازی ۳۰ روز+', _ic('CLEANING_SERVICES', 'DELETE_SWEEP'), lambda e: clean(30), height=34),
+                    obtn('پاکسازی ۷ روز+', _ic('DELETE_SWEEP', 'DELETE'), lambda e: clean(7), height=34)],
+                   spacing=6, wrap=True),
+        ], spacing=6), padding=12),
+        ft.Row([chip(k, l) for k, l in FILTERS], spacing=6, wrap=True, run_spacing=6),
+        listing,
+    ]
+    rebuild_nonui = list_export_files()
+    usage.value = f"{len(rebuild_nonui)} فایل • {human_size(sum(f['size'] for f in rebuild_nonui))}"
+    shown = [f for f in rebuild_nonui if st['flt'] == 'all' or f['kind'] == st['flt']]
+    for f in shown[:150]:
+        listing.controls.append(file_card(f))
+    if not shown:
+        listing.controls.append(txt('فایلی در این دسته نیست. فیش، قرارداد، تایم‌شیت و پشتیبان‌ها اینجا جمع می‌شوند.',
+                                    10, color=MUTED))
+    return ft.ListView(controls, spacing=8, expand=True, padding=pad_only(bottom=24))
+
+
+App.v_files = _app_v_files
+App.v_backup = _app_v_files
+
+# ───────────── استثنای کسر کار ─────────────
+ABSENT_BUILTIN_ITEMS = ['پایه سنوات', 'نوبت‌کاری', 'حق جذب', 'حق مسئولیت', 'حق اولاد']
+
+
+def _app_v_absent_exceptions(self):
+    P, A, MUTED = T()['primary'], T()['accent'], T()['muted']
+    emps = {e['id']: e for e in self.db.q("SELECT * FROM employees WHERE company_id=?", (self.cid,))}
+    depts = {d['id']: d for d in self.db.q("SELECT * FROM departments WHERE company_id=?", (self.cid,))}
+    titles = [b['title'] for b in self.db.q("SELECT DISTINCT title FROM benefits WHERE company_id=? AND title<>''", (self.cid,))]
+    item_opts = []
+    for t_ in titles + ABSENT_BUILTIN_ITEMS:
+        if t_ not in [x[0] for x in item_opts]:
+            item_opts.append((t_, t_))
+    holder = ft.Column(spacing=6)
+
+    def rebuild():
+        holder.controls.clear()
+        rows = self.db.q("SELECT * FROM absent_exceptions WHERE company_id=? ORDER BY id DESC", (self.cid,))
+        for r in rows:
+            who = (f"👤 {emps[r['emp_id']]['first_name']} {emps[r['emp_id']]['last_name']}" if r.get('emp_id') in emps
+                   else f"🏢 دپارتمان {depts[r['dept_id']]['title']}" if r.get('dept_id') in depts else '—')
+
+            def rm(e, rid=r['id']):
+                self.db.x("DELETE FROM absent_exceptions WHERE id=?", (rid,))
+                rebuild()
+            holder.controls.append(card(ft.Row([
+                ft.Column([txt(r['item_key'], 12, True), txt(who + (f" • {r['reason']}" if r.get('reason') else ''), 10,
+                                                              color=MUTED)], spacing=1, expand=True),
+                iconbtn(_ic('DELETE'), rm, '#c0392b', 20, 'حذف')]), padding=10))
+        if not rows:
+            holder.controls.append(txt('هنوز استثنایی تعریف نشده؛ همه مزایا به نسبت کسر کار کم می‌شوند.', 10, color=MUTED))
+        try: holder.update()
+        except Exception: pass
+
+    def add(e=None):
+        item_dd = dd('کدام مزایا از کسر کار معاف باشد؟', item_opts, None, expand=True)
+        emp_dd = dd('برای پرسنل', [(0, '— همه / انتخاب نشده —')] + [(i, f"{v['first_name']} {v['last_name']}") for i, v in emps.items()],
+                    0, expand=True)
+        dep_dd = dd('یا برای دپارتمان', [(0, '— هیچ‌کدام —')] + [(i, v['title']) for i, v in depts.items()], 0, expand=True)
+        why = tf('دلیل (اختیاری)', '', expand=True, size=12)
+        er = txt('', 10, True, '#c0392b')
+
+        def ok(ev):
+            if not item_dd.value:
+                er.value = 'مزایا را انتخاب کنید'; er.update(); return
+            ei = int(emp_dd.value or 0); di = int(dep_dd.value or 0)
+            if not ei and not di:
+                er.value = 'پرسنل یا دپارتمان را انتخاب کنید'; er.update(); return
+            self.db.x("INSERT INTO absent_exceptions (company_id, item_key, emp_id, dept_id, reason) VALUES (?,?,?,?,?)",
+                      (self.cid, item_dd.value, ei or None, di or None, (why.value or '').strip()))
+            self.close_dlg(dg); rebuild()
+        dg = ft.AlertDialog(modal=True, title=ft.Text('استثنای کسر کار', size=13),
+                            content=ft.Container(ft.Column([item_dd, emp_dd, dep_dd, why, er], spacing=8, tight=True,
+                                                           scroll=ft.ScrollMode.AUTO),
+                                                 width=min((self.page.width or 400) - 40, 380)),
+                            actions=[tbtn('انصراف', lambda ev: self.close_dlg(dg)), gbtn('افزودن', _ic('ADD'), ok, P)])
+        self.open_dlg(dg)
+
+    rebuild()
+    return ft.ListView([
+        card(ft.Column([
+            txt('➖ استثنای کسر کار و غیبت', 13, True),
+            txt('مزایایی که اینجا برای یک نفر یا یک دپارتمان تعریف شوند، با کسر کار ساعتی کم نمی‌شوند و در غیبت روزانه هم '
+                'به‌طور کامل پرداخت می‌شوند. حق مأموریت هیچ‌وقت کسر نمی‌شود. کسر کار از مزایا را کلاً در «نرخ‌ها ← کسر کار و غیبت» '
+                'می‌توانید خاموش کنید.', 10, color=MUTED),
+            gbtn('افزودن استثنا', _ic('ADD'), add, P)], spacing=8), padding=12),
+        holder], spacing=8, expand=True, padding=pad_only(bottom=24))
+
+
+App.v_absent_exceptions = _app_v_absent_exceptions
+# <<<UI_E_END>>>
 
 
 def main(page: ft.Page):
