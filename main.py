@@ -1679,7 +1679,7 @@ def build_pdf(path, company, slips):
         extras = []
         for n, k in (("اضافه‌کاری", 'overtime_amount'), ("نوبت‌کاری", 'shift_amount'),
                      ("شب‌کاری", 'night_amount'), ("ماموریت", 'mission_amount'),
-                     ("جمعه‌کاری", 'friday_amount'), ("تعطیل‌کاری", 'holiday_amount')):
+                     ("فوق‌العاده جمعه‌کاری", 'friday_amount'), ("فوق‌العاده تعطیل‌کاری", 'holiday_amount')):
             v = pay.get(k, 0) or 0
             if v: extras.append((n, v))
         if extras: y = sec("اضافات", extras, y, (28, 78, 111))
@@ -2900,6 +2900,14 @@ class App:
         self.page.theme_mode = ft.ThemeMode.DARK if STATE['dark'] else ft.ThemeMode.LIGHT
         self.page.bgcolor = T()['bg']
         if self.body is not None: self.body.bgcolor = T()['bg']
+        try:                                   # اسکرول‌بار ضخیم‌تر و همیشه قابل مشاهده
+            th = self.page.theme or ft.Theme()
+            th.scrollbar_theme = K(ft.ScrollbarTheme, thickness=14, thumb_visibility=True,
+                                   track_visibility=True, radius=7, interactive=True,
+                                   thumb_color=alpha(T()['accent'], 0xcc), track_color=alpha(T()['muted'], 0x22))
+            self.page.theme = th
+        except Exception:
+            pass
 
     def _clock_string(self):
         """رشته‌ی تاریخ و ساعت شمسی با ارقام فارسی."""
@@ -3027,7 +3035,8 @@ class App:
                 ft.Container(txt(path, 10, selectable=True),
                              bgcolor=T()['bg'], padding=8, border_radius=8),
             ], spacing=8, tight=True), width=min((self.page.width or 400) - 80, 360)),
-            actions=[tbtn("📋 کپی مسیر", do_copy),
+            actions=[tbtn("👁 پیش‌نمایش", lambda e: (self.close_dlg(d), self.preview_file(path))),
+                     tbtn("📋 کپی مسیر", do_copy),
                      gbtn("📂 باز کردن", None, do_open, T()['success']),
                      tbtn("بستن", lambda e: self.close_dlg(d))])
         self.open_dlg(d)
@@ -3986,7 +3995,7 @@ class App:
         add_switch('marital', 'متاهل')
         add_int('child_count', 'تعداد فرزند')
         add_dd('ts_rest_day', 'روز تعطیل هفتگی این فرد',
-               [('', 'پیش‌فرض شرکت')] + [(str(_i), TS_WEEKDAYS[_i]) for _i in range(7)])
+               [('', 'پیش‌فرض شرکت'), ('-2', 'هیچ روزی (بدون استراحت هفتگی)')] + [(str(_i), TS_WEEKDAYS[_i]) for _i in range(7)])
 
         _pol_e = ts_policy(self.db, self.cid, self.year)
         _ml = {'fixed': 'ریال در ماه', 'percent': 'درصد مزد پایه', 'daily': 'ریال برای هر روز کارکرد'}
@@ -4530,7 +4539,6 @@ class App:
             [('mission_days', 'مأموریت (روز)'), ('shift_percent', 'نوبت‌کاری %')],
             [('friday_hours', 'جمعه‌کاری بدون جایگزین (ساعت)'), ('friday_replaced_hours', 'جمعه‌کاری با جایگزین (ساعت)')],
             [('holiday_hours', 'تعطیل‌کاری رسمی (ساعت)'), ('holiday_ot_hours', 'اضافه‌کاری در تعطیل (ساعت)')],
-            [('absent_days', 'غیبت (روز)')],
         ]
 
         def fmt_v(v):
@@ -5246,8 +5254,8 @@ class App:
                                           ("نوبت‌کاری", 'shift_amount'),
                                           ("شب‌کاری", 'night_amount'),
                                           ("ماموریت", 'mission_amount'),
-                                          ("جمعه‌کاری", 'friday_amount'),
-                                          ("تعطیل‌کاری", 'holiday_amount')) if p.get(k)]
+                                          ("فوق‌العاده جمعه‌کاری", 'friday_amount'),
+                                          ("فوق‌العاده تعطیل‌کاری", 'holiday_amount')) if p.get(k)]
 
         # 🆕 اقساط وام مرتبط با این فیش
         loan_insts = self.db.q("""SELECT li.*, l.principal, l.remaining_balance
@@ -6563,6 +6571,7 @@ _EXTRA_MIGRATIONS = {
         ('eid_max_days', 'INTEGER'),
         ('mission_daily_rate', 'INTEGER'),
         ('insurance_tax_deduct_percent', 'REAL'),
+        ('friday_coeff_norep', 'REAL'),
     ],
     'attendances': [
         ('friday_rest_replaced', 'INTEGER DEFAULT 0'),
@@ -6625,7 +6634,8 @@ def _enhanced_db_init(self):
                 'eid_min_days': (eid or {}).get('min_days') or 60,
                 'eid_max_days': (eid or {}).get('max_days') or 90,
                 'mission_daily_rate': 0,
-                'insurance_tax_deduct_percent': 0.0,
+                'insurance_tax_deduct_percent': 100.0,
+                'friday_coeff_norep': 0.8,
             }
             for key, value in mapping.items():
                 if rr.get(key) is not None:
@@ -6717,6 +6727,7 @@ def _enhanced_calc_init(self, company, year, month):
     self.overtime_coeff = _overtime_multiplier(rate.get('overtime_coeff'), 1.4)
     self.night_coeff = _premium_fraction(rate.get('night_coeff'), 0.35)
     self.friday_coeff = _premium_fraction(rate.get('friday_coeff'), 0.40)
+    self.friday_coeff_norep = _premium_fraction(rate.get('friday_coeff_norep'), 0.80)
     self.holiday_coeff = _premium_fraction(rate.get('holiday_coeff'), 0.40)
     self.shift_morning_evening = _as_float(chosen('shift_morning_evening', 10), 10)
     self.shift_three_turn = _as_float(chosen('shift_three_turn', 15), 15)
@@ -6724,7 +6735,7 @@ def _enhanced_calc_init(self, company, year, month):
     self.eid_min_days = int(chosen('eid_min_days', eid.get('min_days') or 60) or 60)
     self.eid_max_days = int(chosen('eid_max_days', eid.get('max_days') or 90) or 90)
     self.mission_daily_rate = max(0, int(chosen('mission_daily_rate', 0) or 0))
-    self.ins_tax_deduct_pct = min(max(_as_float(rate.get('insurance_tax_deduct_percent'), 0.0), 0.0), 100.0)
+    self.ins_tax_deduct_pct = min(max(_as_float(rate.get('insurance_tax_deduct_percent'), 100.0), 0.0), 100.0)
     annual_benefits = {
         'حق مسکن': rate.get('housing_allowance'),
         'بن کارگری': rate.get('food_allowance'),
@@ -6830,9 +6841,10 @@ def _enhanced_compute_salary(self, emp, att, installments=None, bonuses=None, de
     if sp > 0 and ded_on and ab_days_eq > 0 and not _absent_excepted('نوبت‌کاری'):
         shift_ded = min(shift, rnd(daily_fixed * sp / 100.0 * ab_days_eq))
     _ot_x = self.overtime_coeff - 1.0
-    friday = (rnd(hourly * (1.0 + self.friday_coeff + _ot_x) * fd_h)
-              + rnd(hourly * (1.0 + self.friday_coeff) * fr_h))
-    holiday = (rnd(hourly * (1.0 + self.holiday_coeff) * hl_h)
+    # جمعه/تعطیلِ کارکرده در کارکرد عادی (روز) حساب می‌شود؛ اینجا فقط «فوق‌العاده» محاسبه می‌شود
+    friday = (rnd(hourly * self.friday_coeff_norep * fd_h)
+              + rnd(hourly * self.friday_coeff * fr_h))
+    holiday = (rnd(hourly * self.holiday_coeff * hl_h)
                + rnd(hourly * (1.0 + self.holiday_coeff + _ot_x) * ho_h))
     mission_daily = self.mission_daily_rate if self.mission_daily_rate > 0 else daily_fixed
     mission = rnd(mission_daily * md_d)
@@ -7105,7 +7117,8 @@ def _app_v_rates(self):
         dict(key='child_allowance', label='حق اولاد هر فرزند (ریال)', type='money'),
         dict(key='overtime_coeff', label='ضریب کل اضافه‌کاری (۱٫۴)', type='float'),
         dict(key='night_coeff', label='فوق‌العاده شب‌کاری (۰٫۳۵ یا ۳۵)', type='float'),
-        dict(key='friday_coeff', label='فوق‌العاده جمعه‌کاری (۰٫۴ یا ۴۰)', type='float'),
+        dict(key='friday_coeff', label='فوق‌العاده جمعه‌کاری با جایگزین (۰٫۴ یا ۴۰)', type='float'),
+        dict(key='friday_coeff_norep', label='فوق‌العاده جمعه‌کاری بدون جایگزین (۰٫۸ یا ۸۰)', type='float'),
         dict(key='holiday_coeff', label='فوق‌العاده تعطیل‌کاری (۰٫۴ یا ۴۰)', type='float'),
         dict(key='shift_morning_evening', label='نوبت صبح و عصر (%)', type='float'),
         dict(key='shift_three_turn', label='نوبت صبح/عصر/شب (%)', type='float'),
@@ -7117,7 +7130,7 @@ def _app_v_rates(self):
         dict(key='insurance_employer_rate', label='بیمه سهم کارفرما بدون بیکاری (%)', type='float'),
         dict(key='insurance_unemployment_rate', label='بیمه بیکاری (%)', type='float'),
         dict(key='insurance_cap_multiplier', label='ضریب سقف دستمزد بیمه', type='float'),
-        dict(key='insurance_tax_deduct_percent', label='درصدی از بیمه سهم کارگر که از مبنای مالیات کسر می‌شود (۰ تا ۱۰۰؛ پیش‌فرض ۰)', type='float'),
+        dict(key='insurance_tax_deduct_percent', label='درصدی از بیمه سهم کارگر که از مبنای مالیات کسر می‌شود (۰ تا ۱۰۰؛ پیش‌فرض ۱۰۰)', type='float'),
         dict(key='eid_min_days', label='روز مزد مبنای عیدی (معمولاً ۶۰)', type='int'),
         dict(key='eid_max_days', label='سقف روز مزد عیدی (معمولاً ۹۰)', type='int'),
         dict(key='mission_daily_rate', label='نرخ روزانه مأموریت؛ صفر=مزد روزانه', type='money'),
@@ -7131,13 +7144,13 @@ def _app_v_rates(self):
         year=self.year, min_daily_wage=STD['min_daily_wage'], base_year_daily=STD['base_year_daily'],
         housing_allowance=STD['housing'], food_allowance=STD['food'],
         marriage_allowance=STD['marriage'], child_allowance=STD['child_allowance'],
-        overtime_coeff=1.4, night_coeff=0.35, friday_coeff=0.4, holiday_coeff=0.4,
+        overtime_coeff=1.4, night_coeff=0.35, friday_coeff=0.4, friday_coeff_norep=0.8, holiday_coeff=0.4,
         shift_morning_evening=10, shift_three_turn=15, shift_morning_night=22.5,
         base_hours=220, hours_per_day=7.33, weekly_hours=44,
         insurance_employee_rate=7, insurance_employer_rate=20,
         insurance_unemployment_rate=3, insurance_cap_multiplier=7,
         eid_min_days=60, eid_max_days=90, mission_daily_rate=0,
-        insurance_tax_deduct_percent=0))
+        insurance_tax_deduct_percent=100))
     # Keep explicit values from the nearest existing year, except its year.
     if latest:
         for f in spec:
@@ -7689,8 +7702,8 @@ def build_pdf(path, company, slips):
         for lbl, key in (("اضافه‌کاری",  'overtime_amount'),
                          ("شب‌کاری",     'night_amount'),
                          ("نوبت‌کاری",   'shift_amount'),
-                         ("جمعه‌کاری",   'friday_amount'),
-                         ("تعطیل‌کاری",  'holiday_amount'),
+                         ("فوق‌العاده جمعه‌کاری",   'friday_amount'),
+                         ("فوق‌العاده تعطیل‌کاری",  'holiday_amount'),
                          ("مأموریت",     'mission_amount')):
             v = pay.get(key) or 0
             if v:
@@ -8641,37 +8654,91 @@ CONTRACT_MARKERS_FA = (
 )
 
 
-def _insert_snippet(editor, snippet):
+_TOKEN_RE = re.compile(r'\{\{[^{}]*\}\}')
+
+
+def _editor_cursor(editor, cur=None):
+    """موقعیت مکان‌نما/انتخاب: اول وضعیت ثبت‌شده با on_selection_change، بعد خود فیلد."""
     v = editor.value or ''
-    pos = len(v)
-    sel = getattr(editor, 'selection', None)
-    try:
-        if sel is not None:
-            a = getattr(sel, 'start', None)
-            if a is None:
-                a = min(getattr(sel, 'base_offset', pos), getattr(sel, 'extend_offset', pos))
-            if a is not None and 0 <= a <= len(v): pos = int(a)
-    except Exception:
-        pos = len(v)
-    editor.value = v[:pos] + snippet + v[pos:]
+    a = b = len(v)
+    if cur and cur.get('a') is not None:
+        a, b = cur['a'], cur['b']
+    else:
+        sel = getattr(editor, 'selection', None)
+        try:
+            if sel is not None:
+                x = getattr(sel, 'start', None)
+                y = getattr(sel, 'end', None)
+                if x is None:
+                    x = getattr(sel, 'base_offset', a); y = getattr(sel, 'extend_offset', x)
+                if y is None: y = x
+                a, b = int(x), int(y)
+        except Exception:
+            a = b = len(v)
+    a, b = max(0, min(a, len(v))), max(0, min(b, len(v)))
+    return (a, b) if a <= b else (b, a)
+
+
+def _set_cursor(editor, pos, cur=None):
+    if cur is not None:
+        cur['a'] = cur['b'] = pos
     try:
         TS = getattr(ft, 'TextSelection', None)
         if TS is not None:
-            np_ = pos + len(snippet)
-            editor.selection = TS(base_offset=np_, extend_offset=np_)
+            editor.selection = TS(base_offset=pos, extend_offset=pos)
     except Exception:
         pass
+
+
+def _insert_snippet(editor, snippet, cur=None):
+    """درج در محل مکان‌نما (یا جایگزینی متن انتخاب‌شده) مثل ویرایشگرهای متنی."""
+    v = editor.value or ''
+    a, b = _editor_cursor(editor, cur)
+    editor.value = v[:a] + snippet + v[b:]
+    _set_cursor(editor, a + len(snippet), cur)
     try: editor.update()
     except Exception: pass
 
 
+def _scroll_col(page, col, end=True):
+    """اسکرول ستون به ابتدا/انتها؛ سازگار با نسخه‌های هم‌زمان و ناهم‌زمان Flet."""
+    off = -1 if end else 0
+    fn = getattr(col, 'scroll_to', None)
+    if fn is None: return
+    try:
+        if inspect.iscoroutinefunction(fn):
+            async def _go(): await col.scroll_to(offset=off, duration=350)
+            page.run_task(_go)
+        else:
+            fn(offset=off, duration=350)
+    except Exception:
+        log_error(traceback.format_exc())
+
+
 def _contract_editor_ui(app, ct):
     page = app.page
-    editor = K(ft.TextField, value=ct.template, multiline=True, text_size=11.5,
-               text_align=ft.TextAlign.RIGHT, min_lines=12, max_lines=40,
-               content_padding=pad_sym(10, 10), border_color=T()['line'], border_radius=10,
-               hint_text="متن قالب قرارداد...")
+    cur = {'a': None, 'b': None}
+    hist = {'u': [ct.template or ''], 'r': [], 'skip': False}
+    held = {'tok': None}
+    editor = K(ft.TextField, value=ct.template, multiline=True, text_size=12.5,
+               text_align=ft.TextAlign.RIGHT, min_lines=18,
+               content_padding=pad_sym(12, 12), border_color=T()['line'], border_radius=10,
+               hint_text="متن قالب قرارداد... (هر جای متن را بزنید و تایپ یا متغیر درج کنید)")
     status = ft.Text("", size=10, color=T()['muted'])
+
+    def on_sel(e):
+        try:
+            sel = getattr(e, 'selection', None) or getattr(editor, 'selection', None)
+            if sel is not None:
+                x = getattr(sel, 'start', None); y = getattr(sel, 'end', None)
+                if x is None:
+                    x = getattr(sel, 'base_offset', None); y = getattr(sel, 'extend_offset', x)
+                if x is not None:
+                    cur['a'], cur['b'] = int(x), int(y if y is not None else x)
+        except Exception:
+            pass
+    try: editor.on_selection_change = on_sel
+    except Exception: pass
 
     def refresh_status(e=None):
         ok, unknown = ct.validate_template(editor.value or '')
@@ -8683,11 +8750,82 @@ def _contract_editor_ui(app, ct):
             status.value = "⚠️ متغیر ناشناخته: " + ", ".join(sorted(unknown)); status.color = T()['danger']
         try: status.update()
         except Exception: pass
-    editor.on_change = refresh_status
+    def push_hist():
+        v = editor.value or ''
+        if hist['skip'] or (hist['u'] and hist['u'][-1] == v): return
+        hist['u'].append(v); hist['r'].clear()
+        if len(hist['u']) > 150: del hist['u'][0]
+
+    def on_edit(e=None):
+        push_hist(); refresh_status()
+    editor.on_change = on_edit
     refresh_status()
 
     def insert(snippet):
-        _insert_snippet(editor, snippet); refresh_status()
+        _insert_snippet(editor, snippet, cur); push_hist(); refresh_status()
+
+    def undo(e=None):
+        if len(hist['u']) > 1:
+            hist['r'].append(hist['u'].pop())
+            editor.value = hist['u'][-1]; _set_cursor(editor, len(editor.value), cur)
+            try: editor.update()
+            except Exception: pass
+            refresh_status()
+
+    def redo(e=None):
+        if hist['r']:
+            v = hist['r'].pop(); hist['u'].append(v)
+            editor.value = v; _set_cursor(editor, len(v), cur)
+            try: editor.update()
+            except Exception: pass
+            refresh_status()
+
+    # ── جابه‌جایی متغیر: «برش متغیر» از هر جای متن ← «چسباندن» در هر جای دیگر ──
+    labels = {}
+    for _g in ct.VARIABLE_GROUPS:
+        for _n, _l in _g[1]: labels[_n] = _l
+    held_txt = ft.Text("", size=10, color=T()['purple'], expand=True)
+    held_row = ft.Container(
+        ft.Row([held_txt,
+                gbtn("📌 چسباندن اینجا", None, lambda e: paste_tok(), T()['purple'], height=32),
+                tbtn("لغو", lambda e: cancel_tok())], spacing=6,
+               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        bgcolor=alpha(T()['purple'], 0x22), padding=pad_sym(8, 4), border_radius=10, visible=False)
+
+    def show_held():
+        t_ = held['tok']
+        held_row.visible = bool(t_)
+        if t_:
+            nm = t_[2:-2].strip()
+            held_txt.value = f"🚚 در حال جابه‌جایی: {labels.get(nm, nm)} — مکان‌نما را ببرید و «چسباندن» بزنید"
+        try: held_row.update()
+        except Exception: pass
+
+    def cut_tok(e=None):
+        v = editor.value or ''
+        a, b = _editor_cursor(editor, cur)
+        m = None
+        for mm in _TOKEN_RE.finditer(v):
+            if (a == b and mm.start() <= a <= mm.end()) or (a != b and mm.start() < b and mm.end() > a):
+                m = mm; break
+        if m is None:
+            app.toast("مکان‌نما را داخل یک متغیر ({{...}}) بگذارید یا آن را انتخاب کنید", True); return
+        held['tok'] = m.group(0)
+        editor.value = v[:m.start()] + v[m.end():]
+        _set_cursor(editor, m.start(), cur)
+        try: editor.update()
+        except Exception: pass
+        push_hist(); refresh_status(); show_held()
+
+    def paste_tok():
+        if held['tok']:
+            _insert_snippet(editor, held['tok'], cur)
+            held['tok'] = None; push_hist(); refresh_status(); show_held()
+
+    def cancel_tok():
+        if held['tok']:
+            _insert_snippet(editor, held['tok'], cur)    # لغو = برگرداندن به متن
+        held['tok'] = None; push_hist(); refresh_status(); show_held()
 
     # ── پنل کنترل فشرده (حدود یک‌دهم ارتفاع صفحه)، قابل باز و بسته شدن ──
     groups = list(ct.VARIABLE_GROUPS)
@@ -8763,7 +8901,7 @@ def _contract_editor_ui(app, ct):
             editor.value = ct.DEFAULT_TEMPLATE
             try: editor.update()
             except Exception: pass
-            refresh_status(); app.toast("🔄 قالب پیش‌فرض بارگذاری شد")
+            push_hist(); refresh_status(); app.toast("🔄 قالب پیش‌فرض بارگذاری شد")
         app.confirm("قالب پیش‌فرض رسمی بارگذاری شود؟ (متن فعلی ویرایش‌نشده از بین می‌رود)", go, "بازگردانی", False)
 
     def snap(ev=None):
@@ -8808,7 +8946,47 @@ def _contract_editor_ui(app, ct):
         obtn("📸 تصویر", _ic("PHOTO_CAMERA"), snap, height=38),
         obtn("🔄 پیش‌فرض", _ic("RESTORE"), reset_default, height=38),
     ], spacing=6, run_spacing=6, wrap=True)
-    return dict(editor=editor, status=status, panel=panel, toolbar=toolbar)
+    editbar = ft.Row([
+        obtn("↶ بازگشت", _ic("UNDO"), undo, height=34),
+        obtn("↷ تکرار", _ic("REDO"), redo, height=34),
+        obtn("✂ برش متغیر", _ic("CONTENT_CUT"), cut_tok, height=34),
+        obtn("⏎ خط جدید", _ic("KEYBOARD_RETURN"), lambda e: insert("\n"), height=34),
+    ], spacing=6, run_spacing=6, wrap=True)
+    return dict(editor=editor, status=status, panel=panel, toolbar=toolbar, editbar=editbar, held=held_row,
+                fn=dict(cut=cut_tok, paste=paste_tok, undo=undo, redo=redo, insert=insert, cur=cur))
+
+
+def _contract_layout(app, ui, intro=None, height=None):
+    """چیدمان ویرایشگر شبیه Word/Excel: نوار ابزار و پنل متغیرها جمع‌شونده، اسکرول ضخیم، پرش به ابتدا/انتهای قرارداد."""
+    P = T()['primary']
+    page = app.page
+    tools = ft.Column([ui['toolbar'], ui['editbar'], ui['status']], spacing=6)
+    panel = ui['panel']
+    flags = {'tools': True, 'vars': True}
+    b_tools = ft.Container(); b_vars = ft.Container()
+
+    def mk(label, key, target):
+        t_ = txt(label, 10, True, P)
+
+        def tg(e):
+            flags[key] = not flags[key]
+            target.visible = flags[key]
+            t_.value = ("▾ " if flags[key] else "▸ ") + label[2:]
+            try: target.update(); t_.update()
+            except Exception: pass
+        return ft.Container(t_, on_click=tg, ink=True, padding=pad_sym(10, 6), border_radius=10,
+                            bgcolor=alpha(P, 0x14))
+    bt = mk("▾ ابزارها", 'tools', tools)
+    bv = mk("▾ متغیرها", 'vars', panel)
+    scroller = ft.Column([ui['editor'], ft.Container(height=120)], scroll=ft.ScrollMode.ALWAYS,
+                         spacing=0, expand=True)
+    nav = ft.Row([bt, bv, ft.Container(expand=True),
+                  iconbtn(_ic('VERTICAL_ALIGN_TOP'), lambda e: _scroll_col(page, scroller, False), P, 24, 'ابتدای قرارداد'),
+                  iconbtn(_ic('VERTICAL_ALIGN_BOTTOM'), lambda e: _scroll_col(page, scroller, True), P, 24, 'انتهای قرارداد')],
+                 spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+    ctrls = [*([intro] if intro else []), nav, tools, ui['held'], panel, scroller]
+    col = ft.Column(ctrls, spacing=6, expand=True)
+    return ft.Container(col, expand=True, height=height) if height else col
 
 
 def _contract_open(self):
@@ -8820,10 +8998,8 @@ def _contract_open(self):
         title=ft.Row([ft.Text(title, size=13, expand=True), ui['status']],
                      vertical_alignment=ft.CrossAxisAlignment.CENTER),
         content=ft.Container(
-            ft.Column([ui['toolbar'], ui['panel'], txt("✍️ متن قالب", 10, True, T()['muted']), ui['editor']],
-                      scroll=ft.ScrollMode.AUTO, spacing=8, tight=True),
-            width=min((self.page.width or 400) - 20, 560),
-            height=min(max(((self.page.height or 700) - (self.app._kb_height or 0)) * 0.82, 280), 680)),
+            _contract_layout(self.app, ui, height=min(max(((self.page.height or 700) - (self.app._kb_height or 0)) * 0.82, 280), 680)),
+            width=min((self.page.width or 400) - 20, 560)),
         actions=[tbtn("بستن", lambda e: self.app.close_dlg(dlg))])
     self.app.open_dlg(dlg)
 
@@ -8839,12 +9015,9 @@ def _app_v_contract_manager(self):
         contract_end='', daily_salary=STD['min_daily_wage'], insurance_number='12345678901')
     ct = Contract(self, emp)
     ui = _contract_editor_ui(self, ct)
-    return ft.Column([
-        txt("قالب پیش‌فرض قرارداد همه پرسنل. در پیش‌نمایش و PDF از اطلاعات یک پرسنل نمونه استفاده می‌شود.",
-            10, color=T()['muted']),
-        ui['toolbar'], ui['panel'], ui['status'], ui['editor'],
-        ft.Container(height=160),
-    ], spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
+    return _contract_layout(self, ui, txt(
+        "قالب پیش‌فرض قرارداد همه پرسنل؛ مثل ویرایشگر متن: هر جا بزنید و تایپ کنید، متغیر را در محل مکان‌نما درج یا با «برش متغیر» جابه‌جا کنید.",
+        10, color=T()['muted']))
 
 App.v_contract_manager = _app_v_contract_manager
 
@@ -9138,8 +9311,8 @@ def slip_png(path, company, pay, emp, dept, dets, loan_insts=None):
     rows = [("حقوق پایه", fmt(pay.get('base_salary_monthly', 0)))]
     rows += [(d['name'], fmt(d['amount'])) for d in dets if d.get('type') == 1 and (d.get('amount') or 0) > 0]
     for lbl, key in (("اضافه‌کاری", 'overtime_amount'), ("شب‌کاری", 'night_amount'),
-                     ("نوبت‌کاری", 'shift_amount'), ("جمعه‌کاری", 'friday_amount'),
-                     ("تعطیل‌کاری", 'holiday_amount'), ("مأموریت", 'mission_amount')):
+                     ("نوبت‌کاری", 'shift_amount'), ("فوق‌العاده جمعه‌کاری", 'friday_amount'),
+                     ("فوق‌العاده تعطیل‌کاری", 'holiday_amount'), ("مأموریت", 'mission_amount')):
         if pay.get(key): rows.append((lbl, fmt(pay[key])))
     ded = [(d['name'], fmt(d['amount'])) for d in dets if d.get('type') == 2
            and (d.get('amount') or 0) > 0 and not (d.get('name') or '').startswith('قسط')]
@@ -9309,7 +9482,7 @@ TS_PRESETS = [
 ]
 
 TS_POLICY_DEFAULTS = {
-    'ts_weekly_rest': 6,        # روز استراحت هفتگی (۰=شنبه ... ۶=جمعه)
+    'ts_weekly_rest': -1,       # روز استراحت هفتگی (۰=شنبه ... ۶=جمعه؛ ۱- = پیش‌فرض (جمعه)؛ ۲- = هیچ روزی)
     'ts_grace_min': 0,          # تأخیر/تعجیل مجاز در روز (دقیقه) که کسر نمی‌شود
     'ts_ot_min': 0,             # حداقل اضافه‌کاری روزانه برای محاسبه (دقیقه)
     'ts_ot_step': 1,            # گرد کردن اضافه‌کاری به پایین (دقیقه)
@@ -9540,7 +9713,10 @@ def ts_cal_kind(key, pol, holidays):
     """نوع تقویمی روز: rest | holiday | work + عنوان."""
     wd = ts_weekday_of(key)
     hol = holidays.get(key)
-    if wd == int(pol['ts_weekly_rest']):
+    rest_wd = int(pol['ts_weekly_rest'])
+    if rest_wd == -1:          # پیش‌فرض: جمعه
+        rest_wd = 6
+    if rest_wd >= 0 and wd == rest_wd:
         return 'rest', wd, (hol or '')
     if hol:
         return 'holiday', wd, hol
@@ -9581,7 +9757,7 @@ def ts_build_replacements(recs, sched, pol, holidays, month_lo, month_hi):
         tkind, twd, _tt = ts_cal_kind(tk, pol, holidays)
         if tkind != 'work' or int(mins[twd]) <= 0:
             bad('روز جایگزین باید یک روز کاری عادی باشد؛ پیوند نادیده گرفته شد'); continue
-        has_work = bool(ts_intervals(rec)[0])
+        has_work = bool(ts_intervals(rec)[0]) or (rec.get('status') or '').strip() == 'present'
         if not has_work:
             bad('در روز مبدأ کاری ثبت نشده؛ پیوند معنا ندارد و نادیده گرفته شد'); continue
         if tk in valid_tgt:
@@ -9615,6 +9791,7 @@ def ts_compute_month(emp, year, month, recs, sched, pol, holidays, today_key=Non
     mins = [int(x) for x in sched['mins']]
     s_start = ts_parse_time(sched.get('start')) or 480
     brk = int(sched.get('break') or 0)
+    full_day = max(mins) if mins and max(mins) > 0 else 480     # ساعت کامل یک روز عادی
     ns = ts_parse_time(pol['ts_night_start']) or 1320
     ne = ts_parse_time(pol['ts_night_end']) or 360
     grace = int(pol['ts_grace_min'])
@@ -9862,17 +10039,26 @@ def ts_compute_month(emp, year, month, recs, sched, pol, holidays, today_key=Non
                 day['cls'] = 'swap_work' if not ot else 'over'
         elif eff == 'rest_repl':
             day['cls'] = 'swap_work'
+            if not worked and status == 'present':
+                worked = full_day
+                day['worked'] = worked; tot['recorded_days'] += 1
+                trace.append(f"«حاضر کامل» بدون ثبت ساعت ← {ts_hm(full_day)} (ساعت کامل یک روز کاری) حساب شد")
             if worked:
                 day['friday_repl'] = worked
                 tot['friday_repl'] += worked; tot['worked'] += worked
                 contrib['friday_repl'].append((key, worked, f"کار در جمعه با استراحت جایگزین در {valid_src[key]}"))
-                trace.append(f"کار در روز استراحت هفتگی با روز جایگزین ← جمعه‌کاری با جایگزین {ts_hm(worked)}")
+                trace.append(f"کار در روز استراحت هفتگی با روز جایگزین ← جمعه‌کاری با جایگزین {ts_hm(worked)}؛ "
+                             f"این روز در کارکرد عادی (۱ روز) حساب می‌شود و فقط فوق‌العاده جمعه‌کاری با جایگزین به فیش اضافه می‌شود")
                 if night:
                     tot['night'] += night
                     contrib['night'].append((key, night, f"بین {ts_fmt_time(ns)} و {ts_fmt_time(ne)}"))
                     trace.append(f"{ts_hm(night)} از آن در بازه شب‌کاری است")
         elif eff == 'swap_off':
             day['cls'] = 'swap_off'
+            if not worked and status == 'present':
+                worked = full_day
+                day['worked'] = worked; tot['recorded_days'] += 1
+                trace.append(f"«حاضر کامل» بدون ثبت ساعت ← {ts_hm(full_day)} (ساعت کامل یک روز کاری) حساب شد")
             if worked:
                 dwarn.append('در روز استراحت جایگزین کار ثبت شده؛ به‌عنوان کار در روز استراحت محاسبه شد')
                 day['friday'] = worked
@@ -9883,11 +10069,16 @@ def ts_compute_month(emp, year, month, recs, sched, pol, holidays, today_key=Non
                     contrib['night'].append((key, night, f"بین {ts_fmt_time(ns)} و {ts_fmt_time(ne)}"))
         elif eff == 'rest':
             day['cls'] = 'rest'
+            if not worked and status == 'present':
+                worked = full_day
+                day['worked'] = worked; tot['recorded_days'] += 1
+                trace.append(f"«حاضر کامل» بدون ثبت ساعت ← {ts_hm(full_day)} (ساعت کامل یک روز کاری) حساب شد")
             if worked:
                 day['friday'] = worked; day['cls'] = 'rest_work'
                 tot['friday'] += worked; tot['worked'] += worked
                 contrib['friday'].append((key, worked, 'کار در روز استراحت هفتگی (بدون جایگزین)'))
-                trace.append(f"کار در روز استراحت هفتگی و بدون روز جایگزین ← جمعه‌کاری بدون جایگزین {ts_hm(worked)}")
+                trace.append(f"کار در روز استراحت هفتگی و بدون روز جایگزین ← جمعه‌کاری بدون جایگزین {ts_hm(worked)}؛ "
+                             f"این روز در کارکرد عادی (۱ روز) حساب می‌شود و فقط فوق‌العاده جمعه‌کاری بدون جایگزین به فیش اضافه می‌شود")
                 if night:
                     tot['night'] += night
                     contrib['night'].append((key, night, f"بین {ts_fmt_time(ns)} و {ts_fmt_time(ne)}"))
@@ -9896,6 +10087,10 @@ def ts_compute_month(emp, year, month, recs, sched, pol, holidays, today_key=Non
                 trace.append('کار ثبت نشده ← استراحت هفتگی')
         elif eff == 'holiday':
             day['cls'] = 'holiday'
+            if not worked and status == 'present':
+                worked = full_day
+                day['worked'] = worked; tot['recorded_days'] += 1
+                trace.append(f"«حاضر کامل» بدون ثبت ساعت ← {ts_hm(full_day)} (ساعت کامل یک روز کاری) حساب شد")
             if worked:
                 norm_m = int(pol.get('ts_day_norm') or 440)
                 h_norm, h_ot = min(worked, norm_m), max(0, worked - norm_m)
@@ -9931,6 +10126,8 @@ def ts_compute_month(emp, year, month, recs, sched, pol, holidays, today_key=Non
             cnt = 1 if (worked or credit or status == 'present') else 0
         elif eff == 'swap_off':
             cnt = 1
+        elif eff in ('rest', 'rest_repl', 'holiday'):
+            cnt = 1 if worked else 0     # جمعه/تعطیلِ کارکرده = یک روز عادی کامل (+ فقط فوق‌العاده در فیش)
         day['counted'] = cnt
         if cnt:
             tot['counted_days'] += 1
@@ -10128,7 +10325,7 @@ def ts_policy(db, cid, year):
     except Exception:
         ot_m, fc, hc = 1.4, 0.4, 0.4
     pol['x_fri_rep'] = 1 + fc                 # جمعه‌کاری با جایگزین
-    pol['x_fri_norep'] = 1 + fc + (ot_m - 1)  # جمعه‌کاری بدون جایگزین
+    pol['x_fri_norep'] = 1 + _premium_fraction(row.get('friday_coeff_norep'), 0.8)  # جمعه‌کاری بدون جایگزین
     pol['x_hol'] = 1 + hc                     # تعطیل‌کاری
     pol['x_hol_ot'] = 1 + hc + (ot_m - 1)     # اضافه‌کاری در تعطیل
     return pol
@@ -10143,7 +10340,7 @@ def rate_multipliers(row):
         hc = _premium_fraction(row.get('holiday_coeff'), 0.4)
     except Exception:
         ot_m, fc, hc = 1.4, 0.4, 0.4
-    return dict(ot=ot_m, fri_rep=1 + fc, fri_norep=1 + fc + (ot_m - 1),
+    return dict(ot=ot_m, fri_rep=1 + fc, fri_norep=1 + _premium_fraction(row.get('friday_coeff_norep'), 0.8),
                 hol=1 + hc, hol_ot=1 + hc + (ot_m - 1))
 
 
@@ -10933,11 +11130,11 @@ def render_doc_pdf(path, blocks, width=1240):
 
 # ───────────────────────── طراحی سندها ─────────────────────────
 _TS_ROW_BG = {
-    'rest': (236, 240, 245), 'holiday': (236, 240, 245), 'closed': (236, 240, 245), 'pre_hire': (226, 230, 236),
+    'rest': (214, 228, 247), 'holiday': (250, 220, 232), 'closed': (236, 240, 245), 'pre_hire': (226, 230, 236),
     'absent': (253, 228, 228), 'unpaid': (253, 228, 228),
     'leave': (225, 244, 232), 'sick': (225, 244, 232), 'mission': (226, 238, 255),
     'partial': (255, 245, 210), 'over': (230, 246, 238), 'missing': (255, 251, 225),
-    'rest_work': (255, 236, 210), 'holiday_work': (255, 236, 210), 'swap_work': (255, 236, 210),
+    'rest_work': (253, 208, 140), 'holiday_work': (253, 196, 196), 'swap_work': (255, 236, 210),
     'swap_off': (232, 236, 255),
 }
 
@@ -11146,8 +11343,8 @@ label{font-size:12px;color:var(--mu);display:block;margin:6px 2px 3px}
 .cell.today{border-color:var(--ac);box-shadow:0 0 0 2px #f0b42955}
 .cell.sel{outline:2px solid var(--bl)}
 .c-ok{background:#e8f7ef}.c-over{background:#d9f3e6}.c-partial{background:#fff4cf}.c-absent,.c-unpaid{background:#fde4e4}
-.c-leave,.c-sick{background:#e1f3e8}.c-mission{background:#e0ecff}.c-rest,.c-holiday,.c-closed{background:#e9edf3}
-.c-rest_work,.c-holiday_work,.c-swap_work{background:#ffe9cc}.c-swap_off{background:#e4e8ff}.c-missing{background:#fffbe0;border-style:dashed}.c-pre_hire{background:#d8dde5;opacity:.7}
+.c-leave,.c-sick{background:#e1f3e8}.c-mission{background:#e0ecff}.c-rest{background:#d6e4f7}.c-holiday{background:#fadce8}.c-closed{background:#e9edf3}
+.c-rest_work{background:#fdd08c}.c-holiday_work{background:#fdc4c4}.c-swap_work{background:#ffe9cc}.c-swap_off{background:#e4e8ff}.c-missing{background:#fffbe0;border-style:dashed}.c-pre_hire{background:#d8dde5;opacity:.7}
 .c-future{opacity:.85}
 @media(prefers-color-scheme:dark){.cell{color:#10203a}.cell .s{color:#4b5d78}.cell.c-none{color:var(--tx)}}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(105px,1fr));gap:8px}
@@ -11175,7 +11372,7 @@ const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;'
 const hm=m=>{m=Math.round(m||0);const s=m<0?'-':'';m=Math.abs(m);return fa(s+Math.floor(m/60)+':'+String(m%60).padStart(2,'0'))};
 const MONTHS=['فروردین','اردیبهشت','خرداد','تیر','مرداد','شهریور','مهر','آبان','آذر','دی','بهمن','اسفند'];
 const WD=['ش','ی','د','س','چ','پ','ج'];
-const ST=[['','🕒 ثبت از روی ساعت','#1e3a5f'],['present','✅ حاضر کامل','#16a34a'],['mission','✈️ مأموریت','#2563eb'],['leave','🏖 مرخصی استحقاقی','#0d9488'],['sick','🏥 استعلاجی','#db2777'],['unpaid','🚫 بدون حقوق','#d97706'],['absent','❌ غیبت','#dc2626'],['rest','🛌 استراحت هفتگی','#64748b'],['closed','🏪 تعطیلی کارگاه (روز عادی)','#7c3aed']];
+const ST=[['present','✅ حاضر کامل','#16a34a'],['mission','✈️ مأموریت','#2563eb'],['leave','🏖 مرخصی استحقاقی','#0d9488'],['sick','🏥 استعلاجی','#db2777'],['unpaid','🚫 بدون حقوق','#d97706'],['closed','🏪 تعطیلی کارگاه (روز عادی)','#7c3aed']];
 const CLS={ok:'حضور',partial:'کسر کار',over:'اضافه‌کار',absent:'غیبت',leave:'مرخصی',sick:'استعلاجی',unpaid:'بدون حقوق',mission:'مأموریت',rest:'استراحت',holiday:'تعطیل',closed:'تعطیلی',missing:'ثبت‌نشده',rest_work:'جمعه‌کاری',holiday_work:'تعطیل‌کاری',swap_work:'با جایگزین',swap_off:'جایگزین',pre_hire:'قبل استخدام'};
 let S={me:null,emps:[],emp:null,y:0,m:0,data:null,view:'cal',sel:null,off:0,mode:'admin',draft:null,pt:null};
 let toastT=null;
@@ -12004,15 +12201,15 @@ _RATE_DEFAULTS = dict(
     min_daily_wage=STD['min_daily_wage'], base_year_daily=STD['base_year_daily'],
     housing_allowance=STD['housing'], food_allowance=STD['food'],
     marriage_allowance=STD['marriage'], child_allowance=STD['child_allowance'],
-    overtime_coeff=1.4, night_coeff=0.35, friday_coeff=0.4, holiday_coeff=0.4,
+    overtime_coeff=1.4, night_coeff=0.35, friday_coeff=0.4, friday_coeff_norep=0.8, holiday_coeff=0.4,
     shift_morning_evening=10, shift_three_turn=15, shift_morning_night=22.5,
     base_hours=220, hours_per_day=7.33, weekly_hours=44,
     insurance_employee_rate=7, insurance_employer_rate=20, insurance_unemployment_rate=3,
-    insurance_cap_multiplier=7, insurance_tax_deduct_percent=0,
+    insurance_cap_multiplier=7, insurance_tax_deduct_percent=100,
     eid_min_days=60, eid_max_days=90, mission_daily_rate=0)
 
 # t: money | pct | mult (ضریب کل) | prem (فوق‌العاده) | int | float | enum | bool | time
-_REPL_WD = [(i, TS_WEEKDAYS[i]) for i in range(7)]
+_REPL_WD = [(-1, 'پیش‌فرض (جمعه)'), (-2, 'هیچ روزی (بدون استراحت هفتگی)')] + [(i, TS_WEEKDAYS[i]) for i in range(7)]
 RATE_GROUPS = [
     ('💰 مزد و مزایای ثابت', '#0f766e', [
         dict(k='min_daily_wage', t='money', label='حداقل مزد روزانه', lo=1, hi=10**11,
@@ -12035,10 +12232,12 @@ RATE_GROUPS = [
              note='هر ساعت اضافه‌کاری = نرخ ساعتی × این ضریب (قانون: ۱٫۴)'),
         dict(k='night_coeff', t='prem', label='فوق‌العاده شب‌کاری', lo=0, hi=2,
              note='علاوه بر مزد ساعت‌های بین شروع و پایان شب‌کاری (قانون: ۳۵٪)؛ برای نوبت‌کار محاسبه نمی‌شود'),
-        dict(k='friday_coeff', t='prem', label='فوق‌العاده جمعه‌کاری', lo=0, hi=2,
-             note='جمعه‌کاری با جایگزین = ۱ + این درصد (۱٫۴)؛ بدون جایگزین = ۱ + این درصد + (ضریب اضافه‌کاری − ۱) = ۱٫۸'),
+        dict(k='friday_coeff', t='prem', label='فوق‌العاده جمعه‌کاری با جایگزین', lo=0, hi=2,
+             note='پیش‌فرض ۴۰٪. جمعه‌کارکرده یک روز عادی در کارکرد فیش حساب می‌شود و فوق‌العاده = مزد ساعتی × این درصد × ساعت کار. جمعه/تعطیل بدون حضور با «تعطیلی کارگاه» روز عادی است'),
+        dict(k='friday_coeff_norep', t='prem', label='فوق‌العاده جمعه‌کاری بدون جایگزین', lo=0, hi=2,
+             note='پیش‌فرض ۸۰٪. فوق‌العاده جمعه‌کاری بدون جایگزین = مزد ساعتی × این درصد × ساعت کار (روز آن جزو کارکرد عادی است)'),
         dict(k='holiday_coeff', t='prem', label='فوق‌العاده تعطیل‌کاری', lo=0, hi=2,
-             note='تعطیل رسمی (جایگزین ندارد) = ۱ + این درصد (۱٫۴)؛ اضافه‌کاری در تعطیل = ۱ + این درصد + (ضریب اضافه‌کاری − ۱) = ۱٫۸'),
+             note='تعطیل رسمی کارکرده: روز عادی در کارکرد + فوق‌العاده = مزد ساعتی × این درصد × ساعت (تا مدت روزانه)؛ ساعت بیش از آن = ۱ + این درصد + (ضریب اضافه‌کاری − ۱) = ×۱٫۸'),
     ]),
     ('🔄 نوبت‌کاری', '#d97706', [
         dict(k='shift_morning_evening', t='pct', label='نوبت صبح و عصر', lo=0, hi=100,
@@ -12066,7 +12265,7 @@ RATE_GROUPS = [
         dict(k='insurance_cap_multiplier', t='float', label='ضریب سقف دستمزد بیمه', lo=0, hi=50,
              note='سقف ماهانه = ضریب × حداقل مزد روزانه × روزهای ماه'),
         dict(k='insurance_tax_deduct_percent', t='pct', label='کسر بیمه کارگر از مبنای مالیات', lo=0, hi=100,
-             note='درصدی از بیمه سهم کارگر که از مبنای مالیات کم می‌شود'),
+             note='پیش‌فرض ۱۰۰٪؛ درصدی از بیمه سهم کارگر که از مبنای مالیات کم می‌شود (قابل ویرایش)'),
     ]),
     ('🎁 عیدی', '#be185d', [
         dict(k='eid_min_days', t='int', label='روز مزد مبنای عیدی', lo=1, hi=365, note='معمولاً ۶۰'),
@@ -12074,7 +12273,7 @@ RATE_GROUPS = [
     ]),
     ('🕒 قواعد تایم‌شیت (تردد)', '#475569', [
         dict(k='ts_weekly_rest', t='enum', label='روز استراحت هفتگی', opts=_REPL_WD,
-             note='روزی که کار در آن «جمعه‌کاری» حساب می‌شود (جز با روز جایگزین)'),
+             note='روزی که کار در آن «جمعه‌کاری» حساب می‌شود؛ پیش‌فرض جمعه. «هیچ روزی» برای کارکنان شیفتی بدون استراحت ثابت'),
         dict(k='ts_grace_min', t='int', label='تأخیر/تعجیل مجاز روزانه (دقیقه)', lo=0, hi=120,
              note='کسر کار روزانه تا این حد، کسر نمی‌شود'),
         dict(k='ts_ot_min', t='int', label='حداقل اضافه‌کاری روزانه (دقیقه)', lo=0, hi=240,
@@ -12203,7 +12402,7 @@ def rate_board(row):
         ('یک ساعت اضافه‌کاری', rnd(hourly * g('overtime_coeff'))),
         ('یک ساعت شب‌کاری (فقط فوق‌العاده)', rnd(hourly * g('night_coeff'))),
         ('یک ساعت جمعه‌کاری با جایگزین', rnd(hourly * (1 + g('friday_coeff')))),
-        ('یک ساعت جمعه‌کاری بدون جایگزین', rnd(hourly * (1 + g('friday_coeff') + g('overtime_coeff') - 1))),
+        ('یک ساعت جمعه‌کاری بدون جایگزین', rnd(hourly * (1 + g('friday_coeff_norep')))),
         ('یک ساعت تعطیل‌کاری رسمی', rnd(hourly * (1 + g('holiday_coeff')))),
         ('یک ساعت اضافه‌کاری در تعطیل', rnd(hourly * (1 + g('holiday_coeff') + g('overtime_coeff') - 1))),
         ('یک روز مأموریت', rnd(g('mission_daily_rate') or daily)),
@@ -12372,6 +12571,38 @@ def _app_v_rates(self):
     prev = self.db.q1("SELECT * FROM rate_years WHERE company_id=? AND year<? ORDER BY year DESC LIMIT 1",
                       (self.cid, year))
     items = []
+    _open = getattr(self, '_rate_open', None)
+    if _open is None:
+        _open = self._rate_open = {}
+    _folds = []
+
+    def fold(key, title, color, body_controls, header_extra=None, default=True, padding=10):
+        """کارت جمع‌شونده: دکمه باز/بسته در سرصفحه؛ وضعیت بین بازسازی صفحه حفظ می‌شود."""
+        is_open = _open.get(key, default)
+        body = ft.Column(body_controls, spacing=2, visible=is_open)
+        arrow = ft.Icon(_ic('EXPAND_LESS' if is_open else 'EXPAND_MORE', 'KEYBOARD_ARROW_DOWN'), color=color, size=24)
+
+        def apply(state):
+            _open[key] = state
+            body.visible = state
+            _nm = _ic('EXPAND_LESS' if state else 'EXPAND_MORE', 'KEYBOARD_ARROW_DOWN')
+            for _attr in ('name', 'icon'):
+                try:
+                    if hasattr(arrow, _attr): setattr(arrow, _attr, _nm)
+                except Exception: pass
+            try:
+                body.update(); arrow.update()
+            except Exception:
+                try: self.page.update()
+                except Exception: pass
+        _folds.append(apply)
+        head = ft.Container(ft.Row([ft.Container(width=5, height=18, bgcolor=color, border_radius=3),
+                                    txt(title, 12, True, expand=True),
+                                    *(header_extra or []), arrow], spacing=6,
+                                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                            ink=True, border_radius=8, padding=pad_sym(2, 4),
+                            on_click=lambda e: apply(not _open.get(key, default)))
+        return card(ft.Column([head, body], spacing=4), padding=padding)
 
     # ── سال و وضعیت
     def shift_year(dy):
@@ -12421,9 +12652,11 @@ def _app_v_rates(self):
                 9, True, (T()['success'] if (d or 0) > 0.5 else '#c0392b' if (d or 0) < -0.5 else MUTED), width=46),
         ], spacing=6), padding=pad_sym(6, 6), border=ft.Border(bottom=ft.BorderSide(1, LINE))
             if hasattr(ft, 'Border') and hasattr(ft, 'BorderSide') else None))
-    items.append(card(ft.Column([
-        txt('🧮 نرخ‌های محاسبه‌شده (بر اساس همین تنظیمات)', 12, True),
-        txt('همان فرمول موتور حقوق؛ بدون پایه سنوات', 9, color=MUTED), *rows_], spacing=2), padding=10))
+    items.append(ft.Row([
+        obtn('باز کردن همه', _ic('UNFOLD_MORE'), lambda e: [a(True) for a in _folds], expand=True),
+        obtn('بستن همه', _ic('UNFOLD_LESS'), lambda e: [a(False) for a in _folds], expand=True)], spacing=8))
+    items.append(fold('board', '🧮 نرخ‌های محاسبه‌شده (بر اساس همین تنظیمات)', P,
+                      [txt('همان فرمول موتور حقوق؛ بدون پایه سنوات', 9, color=MUTED), *rows_]))
 
     # ── نمودار ضرایب
     def bar(label, mult, color):
@@ -12432,16 +12665,15 @@ def _app_v_rates(self):
                                                    bgcolor=alpha(color, 0x22)), expand=True, border_radius=5),
                        txt(f"× {mult:.2f}", 10, True, color, width=52)], spacing=6)
     g = lambda k: _rate_val(row, k)
-    items.append(card(ft.Column([
-        txt('📊 مقایسه ضریب هر ساعت کار', 12, True),
+    items.append(fold('chart', '📊 مقایسه ضریب هر ساعت کار', '#7c3aed', [
         bar('کار عادی', 1.0, '#64748b'),
         bar('اضافه‌کاری', g('overtime_coeff'), '#7c3aed'),
         bar('شب‌کاری (ساعت شب)', 1 + g('night_coeff'), '#1d4ed8'),
         bar('جمعه با جایگزین', 1 + g('friday_coeff'), '#d97706'),
-        bar('جمعه بدون جایگزین', 1 + g('friday_coeff') + g('overtime_coeff') - 1, '#b45309'),
+        bar('جمعه بدون جایگزین', 1 + g('friday_coeff_norep'), '#b45309'),
         bar('تعطیل رسمی', 1 + g('holiday_coeff'), '#be185d'),
         bar('اضافه‌کاری تعطیل', 1 + g('holiday_coeff') + g('overtime_coeff') - 1, '#9d174d'),
-        txt('مقیاس نوارها تا ضریب ۲', 8, color=MUTED)], spacing=6), padding=10))
+        txt('مقیاس نوارها تا ضریب ۲', 8, color=MUTED)]))
 
     # ── نوار تقسیم بیمه
     ie, ir, iu = g('insurance_employee_rate'), g('insurance_employer_rate'), g('insurance_unemployment_rate')
@@ -12450,12 +12682,11 @@ def _app_v_rates(self):
     def seg(v, color):
         return ft.Container(height=18, bgcolor=color, expand=max(1, int(round(v * 10)))) if v > 0 else None
     segs = [s for s in (seg(ie, '#10b981'), seg(ir, '#3b82f6'), seg(iu, '#f59e0b')) if s is not None]
-    items.append(card(ft.Column([
-        txt(f"🛡 تقسیم حق بیمه (جمع {tot:g}٪ از مبنای مشمول)", 12, True),
+    items.append(fold('ins', f"🛡 تقسیم حق بیمه (جمع {tot:g}٪ از مبنای مشمول)", '#1d4ed8', [
         ft.Container(ft.Row(segs, spacing=0), border_radius=9, clip_behavior=ft.ClipBehavior.HARD_EDGE
                      if hasattr(ft, 'ClipBehavior') else None),
         ft.Row([txt(f"■ کارگر {ie:g}٪", 10, True, '#10b981'), txt(f"■ کارفرما {ir:g}٪", 10, True, '#3b82f6'),
-                txt(f"■ بیکاری {iu:g}٪", 10, True, '#f59e0b')], spacing=12, wrap=True)], spacing=6), padding=10))
+                txt(f"■ بیکاری {iu:g}٪", 10, True, '#f59e0b')], spacing=12, wrap=True)]))
 
     # ── گروه‌ها
     for gtitle, gcolor, fields in RATE_GROUPS:
@@ -12483,11 +12714,9 @@ def _app_v_rates(self):
                                   bgcolor=alpha(gcolor, 0x22))] if show_bar else []),
             ], spacing=3), padding=pad_sym(6, 6), ink=True, border_radius=8,
                 on_click=lambda e, f=f: _rate_edit_dialog(self, row, f)))
-        items.append(card(ft.Column([
-            ft.Row([ft.Container(width=5, height=18, bgcolor=gcolor, border_radius=3),
-                    txt(gtitle, 12, True)], spacing=6),
-            *trs, txt('برای ویرایش روی هر ردیف یا آیکن مداد بزنید؛ زیر هر نرخ علت و اثر آن توضیح داده می‌شود.', 8, color=MUTED)],
-            spacing=2), padding=10))
+        items.append(fold('grp:' + gtitle, gtitle, gcolor,
+                          [*trs, txt('برای ویرایش روی هر ردیف یا آیکن مداد بزنید؛ زیر هر نرخ علت و اثر آن توضیح داده می‌شود.',
+                                     8, color=MUTED)]))
 
     # ── ابزارها
     def copy_prev(e):
@@ -12504,11 +12733,8 @@ def _app_v_rates(self):
                             ft.Icon(_ic('CHEVRON_LEFT'), color=MUTED, size=16)], spacing=8),
                     padding=10, on_click=lambda e: self.push(title, fn))
     def section_card(title, color, lines, fn, btn='مدیریت و ویرایش'):
-        return card(ft.Column([
-            ft.Row([ft.Container(width=5, height=18, bgcolor=color, border_radius=3),
-                    txt(title, 12, True, expand=True),
-                    obtn(btn, _ic('EDIT'), lambda e: self.push(title, fn), height=32, size=10)], spacing=6),
-            *[txt(l, 10, color=MUTED) for l in lines]], spacing=4), padding=10)
+        return fold('sec:' + title.split(' (')[0], title, color, [txt(l, 10, color=MUTED) for l in lines],
+                    header_extra=[obtn(btn, _ic('EDIT'), lambda e: self.push(title, fn), height=32, size=10)])
 
     def q_year(table, order=''):
         return self.db.q(f"SELECT * FROM {table} WHERE company_id=? AND year=? {order}", (self.cid, year))
@@ -12593,21 +12819,22 @@ def _ts_repl_suggestions(day, ctx, sched, recs):
 def ts_status_ui(kind):
     off = kind in ('rest', 'holiday')
     return [
-        ('', 'ACCESS_TIME', 'SCHEDULE', 'ثبت از روی ساعت', 'ورود و خروج را خودم می‌نویسم (۲۴ ساعته)', '#1e3a5f'),
-        ('present', 'CHECK_CIRCLE', 'DONE_ALL', 'حاضر کامل', 'روز کامل طبق برنامه، بدون نوشتن ساعت', '#16a34a'),
+        ('present', 'CHECK_CIRCLE', 'DONE_ALL', 'حاضر کامل',
+         ('بدون ساعت = ساعت کامل روز (در جمعه/تعطیل: جمعه‌کاری/تعطیل‌کاری)؛ با ساعت ورود/خروج = همان ساعت‌ها' if off
+          else 'بدون ساعت = ساعت کامل روز؛ با ساعت ورود/خروج = همان ساعت‌ها'), '#16a34a'),
         ('mission', 'FLIGHT_TAKEOFF', 'WORK', 'مأموریت', 'روز کامل؛ بدون کسر کار و اضافه‌کاری', '#2563eb'),
         ('leave', 'BEACH_ACCESS', 'EVENT_AVAILABLE', 'مرخصی استحقاقی', 'از مانده مرخصی سالانه کم می‌شود', '#0d9488'),
         ('sick', 'LOCAL_HOSPITAL', 'HEALING', 'مرخصی استعلاجی', 'با گواهی پزشک؛ شماره گواهی را ثبت کنید', '#db2777'),
         ('unpaid', 'MONEY_OFF', 'BLOCK', 'مرخصی بدون حقوق', 'این روز در کارکرد نمی‌آید', '#d97706'),
-        ('absent', 'PERSON_OFF', 'CANCEL', 'غیبت', 'روز کارکرد حساب نمی‌شود', '#dc2626'),
-        ('rest', 'HOTEL', 'BED', 'استراحت هفتگی', 'ثبت دستی برای شیفتی‌ها', '#64748b'),
-        ('closed', 'STOREFRONT', 'BUSINESS', 'تعطیلی کارگاه',
-         ('این روز استراحت/تعطیل است؛ با انتخاب، یک روز عادی و کامل ثبت می‌شود' if off
+        ('closed', 'STOREFRONT', 'BUSINESS', 'تعطیلی کارگاه' + (' / حضور نیافت' if off else ''),
+         ('جمعه/تعطیل بوده و پرسنل حضور نیافته؛ مثل یک روز عادی کامل حساب می‌شود' if off
           else 'کارگاه تعطیل بوده؛ روز عادی و کامل حساب می‌شود'), '#7c3aed'),
+        ('__clear', 'RESTART_ALT', 'CLEAR', 'ثبت‌نشده',
+         'پاک کردن وضعیت و ساعت‌های این روز؛ روز به حالت «ثبت‌نشده» برمی‌گردد', '#64748b'),
     ]
 
 
-def ts_status_picker(f, kind, on_change):
+def ts_status_picker(f, kind, on_change, hook=None):
     """شبکه‌ی کاشی‌های انتخاب وضعیت؛ (کنترل، تابع set(key)) را برمی‌گرداند."""
     sel = {'v': f.get('status') or ''}
     refs = {}
@@ -12625,6 +12852,9 @@ def ts_status_picker(f, kind, on_change):
                 pass
 
     def pick(key):
+        if key == '__clear' and hook and hook.get('clear'):
+            hook['clear'](None)          # برگرداندن روز به حالت ثبت‌نشده
+            return
         sel['v'] = key
         f['status'] = key
         paint()
@@ -12717,7 +12947,8 @@ def _ts_day_dialog(self, ctx, emp, day, res, sched, recs):
         ctl[k] = c
         return c
 
-    status_dd, set_status = ts_status_picker(f, kind, preview)
+    clear_hook = {}
+    status_dd, set_status = ts_status_picker(f, kind, preview, clear_hook)
     ctl['status'] = status_dd
     ctl['leave_min'] = time_tf('مرخصی استحقاقی ساعتی (ساعت:دقیقه)', f['leave_min'], on_change=preview, hint='02:00', size=12, expand=True)
     ctl['note'] = tf('یادداشت', f['note'], on_change=preview, expand=True, size=12)
@@ -12763,6 +12994,8 @@ def _ts_day_dialog(self, ctx, emp, day, res, sched, recs):
         except Exception:
             pass
         preview()
+
+    clear_hook['clear'] = clear_day
 
     def pick_repl(k_):
         ctl['repl_date'].value = k_
@@ -13083,6 +13316,23 @@ def _app_v_timesheet(self):
     except Exception:
         leave_line = ''
     warn = [txt('⚠ ' + w, 10, True, '#b45309') for w in res['warnings'][:6]]
+    def bulk_closed(e):
+        todo = [d_ for d_ in res['days']
+                if d_['kind'] in ('rest', 'holiday') and d_['cls'] in ('rest', 'holiday')
+                and not d_['status'] and not d_['in1'] and not d_['leave_min'] and not d_['note']]
+        if not todo:
+            self.toast('جمعه یا تعطیلِ ثبت‌نشده‌ای در این ماه نیست'); return
+
+        def go():
+            n_ = 0
+            for d_ in todo:
+                ok_, _m = ts_save_day(self.db, self.cid, emp['id'], d_['date'], dict(status='closed'), 'admin')
+                n_ += 1 if ok_ else 0
+            self.toast(f'✅ {n_} روز به‌عنوان «تعطیلی کارگاه / حضور نیافت» (روز عادی) ثبت شد')
+            self.refresh()
+        self.confirm(f"{len(todo)} جمعه/تعطیل بدون ثبت، به‌عنوان «روز عادی (حضور نیافت)» ثبت شود؟ "
+                     "(روزهایی که کار کرده‌اید را پیش از این، جدا ثبت کنید)", go, 'ثبت گروهی', False)
+
     body = [
         top, modes, nav,
         ft.Container(ft.Row(tiles, spacing=6, wrap=True, run_spacing=6), padding=pad_only(top=2)),
@@ -13093,6 +13343,7 @@ def _app_v_timesheet(self):
                             9, color=MUTED)], spacing=4), padding=8),
         *warn,
         sched_dd,
+        ft.Row([obtn('🏪 جمعه‌ها و تعطیلاتِ بدون ثبت = روز عادی', _ic('STOREFRONT'), bulk_closed, expand=True)]),
         ft.Row([gbtn('🖨 پیش‌نمایش و چاپ تایم‌شیت', _ic('PRINT'), print_ts, P, expand=True)]),
         K(ft.Switch, label='همراه با علت و معلول محاسبات', value=st['causes'], active_color=A, on_change=toggle_causes),
         ft.Row([gbtn('⬇ جای‌گذاری در کارکرد', _ic('SAVE'),
@@ -13891,6 +14142,123 @@ App.file_dialog = _app_file_dialog
 
 
 # ───────────── صفحه «فایل‌ها و پشتیبان» ─────────────
+def _pdf_page_images(path, limit=12):
+    """صفحه‌های PDF را به تصویر PNG/JPEG تبدیل می‌کند: pypdfium2 ← PyMuPDF ← استخراج JPEG داخل PDFهای خود برنامه."""
+    out = []
+    try:
+        import pypdfium2 as _pdfium
+        doc = _pdfium.PdfDocument(path)
+        for i in range(min(len(doc), limit)):
+            bio = io.BytesIO()
+            doc[i].render(scale=1.6).to_pil().save(bio, 'PNG')
+            out.append(bio.getvalue())
+        if out: return out
+    except Exception:
+        out = []
+    try:
+        import fitz as _fitz
+        doc = _fitz.open(path)
+        for i in range(min(len(doc), limit)):
+            out.append(doc[i].get_pixmap(matrix=_fitz.Matrix(1.6, 1.6)).tobytes('png'))
+        if out: return out
+    except Exception:
+        out = []
+    try:
+        with open(path, 'rb') as fh:
+            data = fh.read()
+        pos = 0
+        while len(out) < limit:
+            k = data.find(b'/DCTDecode', pos)
+            if k < 0: break
+            a = data.find(b'stream', k)
+            if a < 0: break
+            a += 6
+            if data[a:a + 2] == b'\r\n': a += 2
+            elif data[a:a + 1] == b'\n': a += 1
+            e = data.find(b'endstream', a)
+            if e < 0: break
+            blob = data[a:e].rstrip(b'\r\n')
+            if blob[:2] == b'\xff\xd8': out.append(blob)
+            pos = e
+    except Exception:
+        pass
+    return out
+
+
+def _app_preview_file(self, path):
+    """پیش‌نمایش هر فایل: تصویر، PDF (صفحه‌به‌صفحه)، متن/CSV، پایگاه‌داده؛ در غیر این‌صورت اطلاعات فایل."""
+    P, MUTED = T()['primary'], T()['muted']
+    name = os.path.basename(path)
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'):
+        return self.preview_image(path, name)
+    W = min((self.page.width or 400) - 20, 580)
+    H = min((self.page.height or 700) * 0.75, 640)
+    parts = []
+    try:
+        if ext == '.pdf':
+            imgs = _pdf_page_images(path)
+            ps = _params(ft.Image)
+            enum = getattr(ft, 'ImageFit', None) or getattr(ft, 'BoxFit', None)
+            for i, raw in enumerate(imgs):
+                kw = dict(width=W - 24)
+                if enum is not None and hasattr(enum, 'CONTAIN'): kw['fit'] = enum.CONTAIN
+                if 'src_base64' in ps: kw['src_base64'] = base64.b64encode(raw).decode('ascii')
+                else: kw['src'] = raw
+                parts.append(txt(f"صفحه {i + 1}", 9, color=MUTED))
+                parts.append(ft.Container(K(ft.Image, **kw), border=border_all(1, T()['line']), border_radius=6))
+            if not imgs:
+                parts.append(txt('برای این PDF پیش‌نمایش داخلی ساخته نشد؛ با «باز کردن» در نمایشگر PDF دستگاه ببینید.',
+                                 11, color=MUTED))
+        elif ext in ('.csv', '.txt', '.json', '.log', '.md', '.tsv'):
+            with open(path, 'r', encoding='utf-8-sig', errors='replace') as fh:
+                lines = [ln.rstrip('\n') for _i, ln in zip(range(200), fh)]
+            if ext in ('.csv', '.tsv'):
+                rows = list(csv.reader(lines, delimiter='\t' if ext == '.tsv' else ','))
+                for ri, r in enumerate(rows):
+                    parts.append(ft.Container(
+                        ft.Row([txt(c, 10, ri == 0, P if ri == 0 else None, width=92) for c in r],
+                               spacing=4, scroll=ft.ScrollMode.AUTO),
+                        bgcolor=alpha(P, 0x14) if ri == 0 else None, padding=pad_sym(4, 3)))
+            else:
+                parts.append(txt('\n'.join(lines), 10, selectable=True))
+            if len(lines) >= 200:
+                parts.append(txt('… فقط ۲۰۰ خط اول نمایش داده شد', 9, color=MUTED))
+        elif ext == '.db':
+            con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            try:
+                tabs = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+                for t_ in tabs:
+                    if t_.startswith('sqlite_'): continue
+                    n = con.execute(f'SELECT COUNT(*) FROM "{t_}"').fetchone()[0]
+                    parts.append(ft.Row([txt(t_, 11, expand=True), txt(f"{n} رکورد", 11, True, P)]))
+            finally:
+                con.close()
+        else:
+            parts.append(txt('این نوع فایل پیش‌نمایش داخلی ندارد؛ با «باز کردن» یا «اشتراک» استفاده کنید.', 11, color=MUTED))
+    except Exception:
+        log_error(traceback.format_exc())
+        parts.append(txt('خواندن فایل ممکن نشد.', 11, color='#c0392b'))
+    try: size = human_size(os.path.getsize(path))
+    except Exception: size = ''
+
+    async def do_share(ev):
+        await share_document(self.page, path, name)
+
+    async def do_open(ev):
+        if not await open_document(self.page, path):
+            self.toast('باز کردن مستقیم ممکن نشد؛ از اشتراک استفاده کنید.', True)
+    d = ft.AlertDialog(
+        modal=True, title=ft.Text(f"👁 {name}", size=12),
+        content=ft.Container(ft.Column([txt(size, 9, color=MUTED), *parts], spacing=6,
+                                       scroll=ft.ScrollMode.AUTO), width=W, height=H),
+        actions=[tbtn('📂 باز کردن', do_open), tbtn('📤 اشتراک', do_share),
+                 tbtn('بستن', lambda e: self.close_dlg(d))])
+    self.open_dlg(d)
+
+App.preview_file = _app_preview_file
+
+
 def _app_v_files(self):
     P, A, MUTED = T()['primary'], T()['accent'], T()['muted']
     st = self.__dict__.setdefault('_files_st', {'flt': 'all'})
@@ -13948,7 +14316,8 @@ def _app_v_files(self):
                 rebuild()
             self.confirm(f"فایل «{os.path.basename(p)}» برای همیشه حذف شود؟", go, 'حذف فایل')
 
-        acts = [iconbtn(_ic('OPEN_IN_NEW'), op, T()['success'], 18, 'باز کردن'),
+        acts = [iconbtn(_ic('VISIBILITY', 'REMOVE_RED_EYE'), lambda ev, p=p: self.preview_file(p), '#0891b2', 18, 'پیش‌نمایش'),
+                iconbtn(_ic('OPEN_IN_NEW'), op, T()['success'], 18, 'باز کردن'),
                 iconbtn(_ic('SHARE'), sh, P, 18, 'اشتراک'),
                 iconbtn(_ic('DRIVE_FILE_RENAME_OUTLINE', 'EDIT'), rn, A, 18, 'تغییر نام'),
                 iconbtn(_ic('DELETE'), rm, '#c0392b', 18, 'حذف')]
@@ -13959,7 +14328,7 @@ def _app_v_files(self):
                     ft.Column([txt(f['name'], 11, True, selectable=True),
                                txt(f"{kind} • {human_size(f['size'])} • {_fmt_mtime(f['mtime'])}", 9, color=MUTED)],
                               spacing=1, expand=True)], spacing=8),
-            ft.Row(acts, spacing=0, alignment=ft.MainAxisAlignment.END)], spacing=2), padding=8)
+            ft.Row(acts, spacing=0, alignment=ft.MainAxisAlignment.END)], spacing=2), padding=8, on_click=lambda ev, p=p: self.preview_file(p))
 
     # ── پشتیبان
     def ask_restore(p):
@@ -14165,13 +14534,84 @@ App.v_absent_exceptions = _app_v_absent_exceptions
 # <<<UI_E_END>>>
 
 
+class _Splash:
+    """صفحه شروع متحرک: حلقه‌ی چرخ‌دنده، لوگوی ضربان‌دار و نوار پیشرفت تا لحظه‌ی باز شدن برنامه."""
+    MSGS = ['در حال آماده‌سازی پایگاه داده…', 'بارگذاری نرخ‌ها و قوانین…',
+            'آماده‌سازی محیط کار…', 'چند لحظه‌ی دیگر…']
+
+    def __init__(self, page):
+        self.page = page; self.on = False; self.t = 0
+        self.gear = self.gear2 = self.logo = self.msg = None
+
+    def show(self):
+        try:
+            p = self.page
+            p.rtl = True; p.padding = 0; p.bgcolor = '#12263f'
+            try: p.theme_mode = ft.ThemeMode.DARK
+            except Exception: pass
+            anim = lambda ms: K(ft.Animation, ms, getattr(getattr(ft, 'AnimationCurve', None), 'LINEAR', 'linear'))
+            self.gear = K(ft.Icon, _ic('SETTINGS'), size=150, color=alpha('#4fc3f7', 0x66),
+                          rotate=0, animate_rotation=anim(900))
+            self.gear2 = K(ft.Icon, _ic('SETTINGS'), size=70, color=alpha('#ffb74d', 0x99),
+                           rotate=0, animate_rotation=anim(900))
+            self.logo = K(ft.Container, content=ft.Icon(_ic('CALCULATE'), size=58, color='#ffffff'),
+                          width=104, height=104, border_radius=52, alignment=center(),
+                          bgcolor='#1976d2', scale=1.0, animate_scale=anim(700),
+                          shadow=K(ft.BoxShadow, blur_radius=30, color=alpha('#4fc3f7', 0x88)))
+            ring = K(ft.ProgressRing, width=190, height=190, stroke_width=3, color='#4fc3f7')
+            stack = K(ft.Stack, [
+                K(ft.Container, content=ring, alignment=center(), width=200, height=200),
+                K(ft.Container, content=self.gear, alignment=center(), width=200, height=200),
+                K(ft.Container, content=self.logo, alignment=center(), width=200, height=200),
+                K(ft.Container, content=self.gear2, left=-6, bottom=-6)],
+                width=200, height=200)
+            self.msg = ft.Text(self.MSGS[0], size=13, color='#b0bec5', text_align=ft.TextAlign.CENTER)
+            bar = K(ft.ProgressBar, width=220, color='#ffb74d', bgcolor=alpha('#ffffff', 0x22))
+            col = K(ft.Column, [stack, ft.Container(height=22),
+                                ft.Text('عرفان حساب', size=30, weight=ft.FontWeight.BOLD, color='#ffffff'),
+                                ft.Text('سیستم جامع حقوق و دستمزد', size=13, color='#90caf9'),
+                                ft.Container(height=18), bar, ft.Container(height=8), self.msg],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    alignment=ft.MainAxisAlignment.CENTER)
+            bg = K(ft.Container, content=col, expand=True, alignment=center(),
+                   gradient=K(ft.LinearGradient, begin=ft.Alignment(0, -1), end=ft.Alignment(0, 1),
+                              colors=['#0d1b2e', '#1e3a5f', '#12263f']))
+            p.controls.clear(); p.add(bg); p.update()
+            self.on = True
+            threading.Timer(0.05, self._tick).start()
+        except Exception:
+            self.on = False
+
+    def _tick(self):
+        if not self.on: return
+        try:
+            self.t += 1
+            self.gear.rotate = self.t * 0.6
+            self.gear2.rotate = -self.t * 0.9
+            self.logo.scale = 1.12 if self.t % 2 else 0.94
+            if self.t % 4 == 0:
+                self.msg.value = self.MSGS[(self.t // 4) % len(self.MSGS)]
+            self.page.update()
+        except Exception:
+            self.on = False; return
+        threading.Timer(0.9, self._tick).start()
+
+    def stop(self):
+        self.on = False
+
+
 def main(page: ft.Page):
     if WEB.get('blocked') and getattr(page, 'web', False):
         page.add(ft.Text('دسترسی از طریق وب غیرفعال شده است.', size=14))
         page.update(); return
+    splash = _Splash(page)
+    splash.show()
     try:
-        App(page, Database()).start()
+        db = Database()
+        splash.stop()
+        App(page, db).start()
     except Exception:
+        splash.stop()
         tb = traceback.format_exc(); log_error(tb)
         try:
             page.add(ft.Text("خطای راه‌اندازی:\n" + tb, selectable=True, size=11))
