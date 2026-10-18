@@ -306,6 +306,22 @@ def fmt(n):
     try: return f"{int(round(float(n))):,}"
     except (TypeError, ValueError): return "0"
 
+def hours_hms(hours):
+    """ساعت اعشاری ← «ساعت:دقیقه:ثانیه» مثل 14:12:11"""
+    try: total = int(round(float(hours or 0) * 3600))
+    except Exception: total = 0
+    total = max(0, total)
+    return f"{total // 3600}:{total % 3600 // 60:02d}:{total % 60:02d}"
+
+
+def fri_split(pay):
+    """(ساعت جمعه بدون جایگزین، با جایگزین)؛ برای فیش‌های قدیمی که تفکیک ندارند همه به «بدون جایگزین» می‌رود."""
+    nr = float(pay.get('friday_norep_hours') or 0); rp = float(pay.get('friday_repl_hours') or 0)
+    if not nr and not rp:
+        nr = float(pay.get('friday_hours') or 0)
+    return nr, rp
+
+
 def hours_to_hm(hours):
     if not hours: return "0:00"
     h = int(hours); m = int(round((hours - h) * 60))
@@ -397,21 +413,58 @@ def _writable(d):
 
 _EXPORT_DIR = {}
 
+
+def private_dir(sub):
+    """پوشه‌ی خصوصی برنامه (همیشه قابل‌نوشتن)؛ خطای Errno 13 را دور می‌زند."""
+    for base in (get_data_dir(), tempfile.gettempdir(), HERE):
+        d = os.path.join(base, sub)
+        if _writable(d):
+            return d
+    return get_data_dir()
+
+
+def tmp_dir():
+    return private_dir('tmp')
+
+
 def export_dir():
-    """پوشه خروجی: اول Download عمومی (برای دسترسی آسان در اندروید)، وگرنه پوشه اپ."""
-    if _EXPORT_DIR.get('p') and os.path.isdir(_EXPORT_DIR['p']):
-        return _EXPORT_DIR['p']
+    """پوشه خروجی: اول Download عمومی (برای دسترسی آسان در اندروید)، وگرنه پوشه خصوصی برنامه.
+    هر چند ثانیه قابل‌نوشتن بودن دوباره سنجیده می‌شود تا با تغییر مجوز/حافظه، ذخیره‌سازی خراب نشود."""
+    cur = _EXPORT_DIR.get('p')
+    now = time.time()
+    if cur and os.path.isdir(cur) and now - _EXPORT_DIR.get('t', 0) < 20:
+        return cur
+    if cur and os.path.isdir(cur) and _writable(cur):
+        _EXPORT_DIR['t'] = now
+        return cur
     for base in ("/storage/emulated/0/Download", "/sdcard/Download",
                  os.path.join(os.path.expanduser("~"), "Downloads")):
         if os.path.isdir(base):
             d = os.path.join(base, "ErfanHesab")
             if _writable(d):
-                _EXPORT_DIR['p'] = d
+                _EXPORT_DIR.update(p=d, t=now)
                 return d
-    d = os.path.join(get_data_dir(), "exports")
-    os.makedirs(d, exist_ok=True)
-    _EXPORT_DIR['p'] = d
+    d = private_dir('exports')
+    _EXPORT_DIR.update(p=d, t=now)
     return d
+
+
+def out_path(name):
+    """مسیر قابل‌نوشتن برای فایل خروجی؛ اگر فایل هم‌نام قفل/غیرقابل‌نوشتن بود، نام یکتا می‌سازد؛
+    اگر پوشه عمومی مجوز نداد، به پوشه خصوصی برنامه برمی‌گردد."""
+    base, ext = os.path.splitext(name)
+    for d in (export_dir(), private_dir('exports')):
+        for n in range(6):
+            p = os.path.join(d, name if n == 0 else f"{base}_{n}{ext}")
+            try:
+                with open(p, 'ab'):
+                    pass
+                return p
+            except OSError:
+                continue
+        if d == export_dir():
+            _EXPORT_DIR.pop('p', None)
+    return os.path.join(private_dir('exports'), name)
 
 
 def exports_usage():
@@ -1047,7 +1100,7 @@ class Database:
         return r['y'] if r and r['y'] else None
 
     def backup(self):
-        dst = os.path.join(export_dir(), f"backup_{datetime.now():%Y%m%d_%H%M%S}.db")
+        dst = out_path( f"backup_{datetime.now():%Y%m%d_%H%M%S}.db")
         src = sqlite3.connect(self.path); out = sqlite3.connect(dst)
         try: src.backup(out)
         finally: out.close(); src.close()
@@ -1416,8 +1469,9 @@ class PayrollService:
                     gross_salary, net_salary, insurance_emp, insurance_er, tax,
                     loan_install, overtime_hours, night_hours, absent_hours,
                     mission_days, friday_hours, holiday_hours,
-                    friday_rest_replaced, holiday_rest_replaced)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    friday_rest_replaced, holiday_rest_replaced,
+                    friday_norep_hours, friday_repl_hours)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (cid, year, month, emp['id'], emp.get('dept_id'), emp.get('daily_salary'),
                      r['work_days'], r['base_salary_monthly'], r['overtime'], r['night'],
                      r['shift'], r['friday_work'], r['holiday_work'], r['mission'],
@@ -1427,7 +1481,8 @@ class PayrollService:
                      r['gross'], r['net'], r['insurance_emp'], r['insurance_er'], r['tax'],
                      r['loan_install'], r['overtime_hours'], r['night_hours'], r['absent_hours'],
                      r['mission_days'], r['friday_hours'], r['holiday_hours'],
-                     r['friday_rest_replaced'], r['holiday_rest_replaced'])).lastrowid
+                     r['friday_rest_replaced'], r['holiday_rest_replaced'],
+                     r.get('friday_norep_hours', 0), r.get('friday_repl_hours', 0))).lastrowid
 
                 # 🆕 علامت‌گذاری اقساط وام محاسبه‌شده در این فیش
                 for lid in r.get('loan_inst_ids') or []:
@@ -1544,7 +1599,7 @@ def export_full_csv(db, svc, cid, year, month):
                      p.get('bonus_amount',0), p['gross_salary'], p['insurance_emp'],
                      p['insurance_er'], p['tax'], p['loan_install'], p['absent_ded'],
                      p['net_salary']])
-    path = os.path.join(export_dir(), f"payroll_full_{year}_{month:02d}.csv")
+    path = out_path( f"payroll_full_{year}_{month:02d}.csv")
     write_csv(path, header, rows)
     return path
 
@@ -1560,7 +1615,7 @@ def export_attendance_csv(db, cid, year, month, employees, att_map):
                      a.get('mission_days',0), a.get('shift_percent',0),
                      a.get('friday_hours',0), a.get('friday_replaced_hours',0),
                      a.get('holiday_hours',0), a.get('holiday_ot_hours',0)])
-    path = os.path.join(export_dir(), f"timesheet_{year}_{month:02d}.csv")
+    path = out_path( f"timesheet_{year}_{month:02d}.csv")
     write_csv(path, ['ردیف','کد','نام','فامیل','کد ملی','روز','اضافه','شب','کسر',
                      'مأموریت','نوبت%','جمعه بدون جایگزین','جمعه با جایگزین','تعطیل','اضافه‌کاری تعطیل'], rows)
     return path
@@ -1615,7 +1670,7 @@ def _draw_logo(pdf, logo_b64, x, y, w=18, h=18):
     try:
         if logo_b64.startswith('data:'): logo_b64 = logo_b64.split(',', 1)[1]
         key = hashlib.md5(logo_b64[:4096].encode() + str(len(logo_b64)).encode()).hexdigest()
-        tmp = os.path.join(tempfile.gettempdir(), f'logo_{key}.png')
+        tmp = os.path.join(tmp_dir(), f'logo_{key}.png')
         if not os.path.isfile(tmp):
             data = base64.b64decode(logo_b64)
             Image.open(io.BytesIO(data)).convert('RGB').save(tmp)
@@ -1969,12 +2024,13 @@ class Contract:
             elif s.startswith('#C '):   blocks.append(('para',    (s[3:].strip(), 'C')))
             elif s.startswith('#L '):   blocks.append(('para',    (s[3:].strip(), 'L')))
             elif s.startswith('#R '):   blocks.append(('para',    (s[3:].strip(), 'R')))
-            elif s.startswith('#P '):   blocks.append(('para',    (s[3:].strip(), 'R')))
+            elif s.startswith('#P '):   blocks.append(('para',    (s[3:].strip(), 'J')))
+            elif s.startswith('#J '):   blocks.append(('para',    (s[3:].strip(), 'J')))
             elif s.startswith('#S '):   blocks.append(('section', s[3:].strip()))
             elif s.startswith('#A '):   blocks.append(('article', s[3:].strip()))
             elif s.startswith('#BOX '): blocks.append(('box',     s[5:].strip()))
             elif s == '#HR':            blocks.append(('hr',      None))
-            else:                       blocks.append(('para',    (s, 'R')))
+            else:                       blocks.append(('para',    (s, 'J')))
             i += 1
         return blocks
 
@@ -2727,6 +2783,220 @@ class Contract:
 # ═══════════════════════════════════════════════════════════════════════════
 #               سازگاری با کد قدیمی — wrapper ها
 # ═══════════════════════════════════════════════════════════════════════════
+
+# ══════════ قرارداد: طراحی رسمی و ساده (سیاه‌وسفید، تمام‌پهنا/جاستیفای) ══════════
+_FC = (20, 20, 20); _FG = (90, 90, 90); _FL = (60, 60, 60)
+
+
+def _c_bold(self, x, y, w, h, text, align='R', size=10, color=_FC):
+    pdf = self._pdf
+    self._sf(size, color)
+    for dx in (0, 0.14):
+        pdf.set_xy(x + dx, y)
+        pdf.cell(w, h, rtl(text), border=0, align=align)
+
+
+def _c_draw_border(self):
+    pdf = self._pdf; W, H = self._page_w, self._page_h
+    pdf.set_draw_color(*_FC); pdf.set_line_width(0.5); pdf.rect(7, 7, W - 14, H - 14, 'D')
+    pdf.set_line_width(0.15); pdf.rect(8.4, 8.4, W - 16.8, H - 16.8, 'D')
+
+
+def _c_draw_header(self):
+    pdf = self._pdf; W = self._page_w; c = self.company or {}
+    y0 = 13
+    _draw_logo(pdf, c.get('logo') or '', W - self.MARGIN - 14, y0, 14, 14)
+    self._c_bold(self.MARGIN + 2, y0 + 1, self._cw_in, 7, c.get('name') or APP_TITLE, 'C', 14)
+    info = []
+    if c.get('reg_no'):         info.append(f"شناسه ملی: {c['reg_no']}")
+    if c.get('economic_code'):  info.append(f"کد اقتصادی: {c['economic_code']}")
+    if c.get('phone'):          info.append(f"تلفن: {c['phone']}")
+    if c.get('address'):        info.append(c['address'])
+    self._sf(7.5, _FG)
+    pdf.set_xy(self.MARGIN + 2, y0 + 8.5)
+    pdf.cell(self._cw_in, 5, rtl('   •   '.join(info) or '—'), border=0, align='C')
+    pdf.set_draw_color(*_FC); pdf.set_line_width(0.4)
+    pdf.line(self.MARGIN + 2, y0 + 15.5, self._page_w - self.MARGIN - 2, y0 + 15.5)
+    return y0 + 20
+
+
+def _c_draw_cont_header(self):
+    pdf = self._pdf; c = self.company or {}
+    self._sf(8.5, _FG)
+    pdf.set_xy(self.MARGIN + 2, 12)
+    pdf.cell(self._cw_in, 5, rtl(f"{c.get('name') or APP_TITLE} — ادامه قرارداد"), border=0, align='C')
+    pdf.set_draw_color(*_FG); pdf.set_line_width(0.25)
+    pdf.line(self.MARGIN + 2, 18, self._page_w - self.MARGIN - 2, 18)
+    return 23
+
+
+def _c_draw_footer(self, page_no):
+    pdf = self._pdf
+    pdf.set_draw_color(*_FG); pdf.set_line_width(0.25)
+    pdf.line(self.MARGIN + 2, self._page_h - 16, self._page_w - self.MARGIN - 2, self._page_h - 16)
+    self._sf(8, _FG)
+    pdf.set_xy(self.MARGIN, self._page_h - 14)
+    pdf.cell(self._cw, 4, rtl(f"صفحه {page_no}"), border=0, align='C')
+    self._sf(6.5, (130, 130, 130))
+    pdf.set_xy(self.MARGIN, self._page_h - 10.5)
+    pdf.cell(self._cw, 3.5, rtl(f"{APP_TITLE} • {DEVELOPER}"), border=0, align='C')
+
+
+def _c_title(self, y, text):
+    y = self._ensure(y, 18)
+    self._c_bold(self.MARGIN + 2, y, self._cw_in, 9, text, 'C', 16)
+    pdf = self._pdf
+    pdf.set_draw_color(*_FC); pdf.set_line_width(0.5)
+    pdf.line(self.MARGIN + 40, y + 10.5, self._page_w - self.MARGIN - 40, y + 10.5)
+    pdf.set_line_width(0.15)
+    pdf.line(self.MARGIN + 40, y + 11.8, self._page_w - self.MARGIN - 40, y + 11.8)
+    return y + 16
+
+
+def _c_section(self, y, text):
+    y = self._ensure(y, 14)
+    self._c_bold(self.MARGIN + 4, y, self._cw_in - 4, 6, text, 'R', 11.5)
+    pdf = self._pdf
+    pdf.set_draw_color(*_FC); pdf.set_line_width(0.35)
+    pdf.line(self.MARGIN + 2, y + 7.2, self._page_w - self.MARGIN - 2, y + 7.2)
+    return y + 10
+
+
+def _c_article(self, y, text):
+    y = self._ensure(y, 14)
+    self._c_bold(self.MARGIN + 4, y, self._cw_in - 4, 6, text, 'R', 10.5)
+    return y + 7.5
+
+
+def _c_para(self, y, text, align='J'):
+    pdf = self._pdf
+    pad_x, line_h, size = 4, 6.6, 10
+    width = self._cw_in - 2 * pad_x
+    lines = self._wrap_rtl(text, width, size)
+    if not lines:
+        return y + line_h
+    y = self._ensure(y, min(len(lines), 3) * line_h + 2)
+    x_left = self.MARGIN + 2 + pad_x
+    for idx, line in enumerate(lines):
+        y = self._ensure(y, line_h + 1)
+        self._sf(size, _FC)
+        words = line.split()
+        last = idx == len(lines) - 1
+        done = False
+        if align == 'J' and not last and len(words) > 1:
+            vis = rtl(line).split(' ')          # ترتیب بصری کل خط (کروشه/گیومه درست می‌ماند)
+            ws = [pdf.get_string_width(w) for w in vis]
+            gap = (width - sum(ws)) / max(1, len(vis) - 1)
+            if len(vis) > 1 and 0 <= gap <= 7:
+                x = x_left
+                for w, wd in zip(vis, ws):
+                    pdf.set_xy(x, y)
+                    pdf.cell(wd + 0.3, line_h, w, border=0, align='L')
+                    x += wd + gap
+                done = True
+        if not done:
+            pdf.set_xy(x_left, y)
+            pdf.cell(width, line_h, rtl(line), border=0, align={'C': 'C', 'L': 'L'}.get(align, 'R'))
+        y += line_h
+    return y + 2
+
+
+def _c_box(self, y, text):
+    pdf = self._pdf
+    pad, line_h, size = 4, 6.4, 9.8
+    inner_w = self._cw_in - 2 * pad - 2
+    lines = self._wrap_rtl(text, inner_w, size)
+    if not lines:
+        return y + line_h
+    box_h = len(lines) * line_h + 2 * pad
+    y = self._ensure(y, box_h + 3)
+    pdf.set_fill_color(244, 244, 244); pdf.set_draw_color(*_FC); pdf.set_line_width(0.35)
+    pdf.rect(self.MARGIN + 2, y, self._cw_in, box_h, 'DF')
+    yy = y + pad
+    x_left = self.MARGIN + 2 + pad + 1
+    for idx, line in enumerate(lines):
+        self._sf(size, _FC)
+        words = line.split(); last = idx == len(lines) - 1
+        if not last and len(words) > 1:
+            vis = rtl(line).split(' ')
+            ws = [pdf.get_string_width(w) for w in vis]
+            gap = (inner_w - sum(ws)) / max(1, len(vis) - 1)
+            if len(vis) > 1 and 0 <= gap <= 7:
+                x = x_left
+                for w, wd in zip(vis, ws):
+                    pdf.set_xy(x, yy); pdf.cell(wd + 0.3, line_h, w, border=0, align='L'); x += wd + gap
+                yy += line_h; continue
+        pdf.set_xy(x_left, yy); pdf.cell(inner_w, line_h, rtl(line), border=0, align='R'); yy += line_h
+    return y + box_h + 4
+
+
+def _c_hr(self, y):
+    y = self._ensure(y, 6)
+    pdf = self._pdf
+    pdf.set_draw_color(*_FG); pdf.set_line_width(0.25)
+    pdf.line(self.MARGIN + 10, y + 3, self._page_w - self.MARGIN - 10, y + 3)
+    return y + 6
+
+
+def _c_table(self, y, rows):
+    if not rows:
+        return y
+    ncols = max(len(r) for r in rows)
+    col_w = self._cw_in / ncols
+    row_h = 8
+    pdf = self._pdf
+    for row in rows:
+        if y + row_h > self._page_h - self.FOOTER_H - 8:
+            self._draw_footer(pdf.page_no()); pdf.add_page(); self._draw_border()
+            y = self._draw_continuation_header()
+        for j in range(ncols):
+            cell = row[j] if j < len(row) else ''
+            is_label = (ncols == 4 and j % 2 == 0) or (ncols == 2 and j == 0)
+            x = self.MARGIN + 2 + (ncols - 1 - j) * col_w
+            pdf.set_draw_color(*_FL); pdf.set_line_width(0.25)
+            pdf.set_fill_color(*((236, 236, 236) if is_label else (255, 255, 255)))
+            pdf.rect(x, y, col_w, row_h, 'DF')
+            if is_label:
+                self._c_bold(x + 1.5, y + 1.6, col_w - 3, row_h - 3, cell, 'C', 8.8)
+            else:
+                self._sf(9, _FC)
+                pdf.set_xy(x + 1.5, y + 1.6)
+                pdf.cell(col_w - 3, row_h - 3, rtl(cell), border=0, align='C')
+        y += row_h
+    return y + 4
+
+
+def _c_signatures(self, y):
+    pdf = self._pdf; c = self.company or {}; e = self.emp or {}
+    self._sf(10, _FC)
+    pdf.set_xy(self.MARGIN + 2, y)
+    pdf.cell(self._cw_in, 6, rtl(f"تاریخ انعقاد قرارداد:  {self._ctx.get('today', jalali_today_str())}"),
+             border=0, align='C')
+    y += 11
+    gap = 8; box_w = (self._cw_in - gap) / 2; box_h = 36
+
+    def sign_box(x, title, name, sub):
+        pdf.set_draw_color(*_FC); pdf.set_line_width(0.4)
+        pdf.rect(x, y, box_w, box_h, 'D')
+        pdf.line(x, y + 7, x + box_w, y + 7)
+        self._c_bold(x, y + 1, box_w, 5, title, 'C', 10)
+        self._sf(8.2, _FG); pdf.set_xy(x + 2, y + 9); pdf.cell(box_w - 4, 4, rtl(sub), border=0, align='C')
+        self._sf(9.5, _FC); pdf.set_xy(x, y + 14); pdf.cell(box_w, 5, rtl(name), border=0, align='C')
+        self._sf(7.8, _FG); pdf.set_xy(x, y + box_h - 6); pdf.cell(box_w, 4, rtl("امضاء / مهر"), border=0, align='C')
+    sign_box(self.MARGIN + 2 + box_w + gap, "کارفرما", c.get('name') or '—', f"مدیرعامل: {c.get('sign_manager') or '—'}")
+    sign_box(self.MARGIN + 2, "کارگر", f"{e.get('first_name','')} {e.get('last_name','')}".strip() or '—',
+             f"کد ملی: {e.get('national_code') or '—'}")
+    return y + box_h + 4
+
+
+for _n, _f in (('_c_bold', _c_bold), ('_draw_border', _c_draw_border), ('_draw_header', _c_draw_header),
+               ('_draw_continuation_header', _c_draw_cont_header), ('_draw_footer', _c_draw_footer),
+               ('_r_title', _c_title), ('_r_section', _c_section), ('_r_article', _c_article),
+               ('_r_para', _c_para), ('_r_box', _c_box), ('_r_hr', _c_hr), ('_r_table', _c_table),
+               ('_draw_signatures', _c_signatures)):
+    setattr(Contract, _n, _f)
+
+
 def build_contract_pdf(path, company, emp, template, dept_title=''):
     """wrapper برای سازگاری کدهای قدیمی که مستقیم این تابع را صدا می‌زنند."""
     c = Contract.__new__(Contract)
@@ -5144,7 +5414,7 @@ class App:
                                   dept=depts.get((emps.get(p['emp_id']) or {}).get('dept_id')),
                                   details=self.svc.details(p['id'])))
             try:
-                path = build_pdf(os.path.join(export_dir(),
+                path = build_pdf(out_path(
                     f"payslips_{self.year}_{self.month:02d}_{datetime.now():%H%M%S}.pdf"),
                     c, slips)
                 self.file_dialog(path, "📄 PDF فیش‌ها ساخته شد", len(slips))
@@ -5171,7 +5441,7 @@ class App:
                                  absent_ded=p['absent_ded'],
                                  net_salary=p['net_salary']))
             try:
-                path = os.path.join(export_dir(),
+                path = out_path(
                     f"payroll_list_{self.year}_{self.month:02d}.pdf")
                 build_payroll_list_pdf(path, c, self.year, self.month, rows)
                 self.file_dialog(path, "📋 لیست حقوق PDF ساخته شد")
@@ -5298,7 +5568,7 @@ class App:
                 # 🆕 اقساط وام را به دیکشنری فیش پیوست می‌کنیم
                 pay_copy = dict(p)
                 pay_copy['loan_insts'] = loan_insts
-                path = build_pdf(os.path.join(export_dir(),
+                path = build_pdf(out_path(
                     f"payslip_{p['emp_id']}_{p['year']}_{p['month']:02d}.pdf"),
                     c, [dict(pay=pay_copy, emp=e, dept=dept, details=dets)])
                 self.file_dialog(path, "📄 PDF ساخته شد", 1)
@@ -5351,7 +5621,7 @@ class App:
                 log_error(traceback.format_exc()); self.info("خطا در ساخت تصویر", str(ex))
         def prev(ev):
             try:
-                tmp = os.path.join(tempfile.gettempdir(), f"slip_prev_{pid}.png")
+                tmp = os.path.join(tmp_dir(), f"slip_prev_{pid}.png")
                 slip_png(tmp, c, p, e, dept, dets, loan_insts)
                 self.preview_image(tmp, "👁 پیش‌نمایش فیش حقوقی")
             except Exception as ex:
@@ -5406,7 +5676,7 @@ class App:
 
         def print_pdf(ev):
             try:
-                path = os.path.join(export_dir(),
+                path = out_path(
                     f"contract_{emp['id']}_{datetime.now():%Y%m%d_%H%M%S}.pdf")
                 build_contract_pdf(path, c, emp, editor.value or template,
                                    (dept or {}).get('title', ''))
@@ -6300,7 +6570,7 @@ class App:
                 pdf.cell(W - 2*M, 8, rtl(f"جمع: عیدی {fmt(te)} — سنوات {fmt(ts)}"),
                         border=1, align='C', fill=True)
 
-                path = os.path.join(export_dir(), f"eid_severance_{self.year}.pdf")
+                path = out_path( f"eid_severance_{self.year}.pdf")
                 pdf.output(path)
                 self.file_dialog(path, "📄 PDF عیدی و سنوات")
             except Exception as ex:
@@ -6584,6 +6854,8 @@ _EXTRA_MIGRATIONS = {
         ('payment_note', 'TEXT'),
         ('friday_rest_replaced', 'INTEGER DEFAULT 0'),
         ('holiday_rest_replaced', 'INTEGER DEFAULT 0'),
+        ('friday_norep_hours', 'REAL DEFAULT 0'),
+        ('friday_repl_hours', 'REAL DEFAULT 0'),
     ],
 }
 for _tbl, _cols in _EXTRA_MIGRATIONS.items():
@@ -7687,13 +7959,14 @@ def build_pdf(path, company, slips):
 
         work_items = [
             ("کارکرد روزانه",   f"{pay.get('work_days') or 0:g} روز"),
-            ("ساعت کارکرد",     hm_persian((pay.get('work_days') or 0) * 7.33)),
-            ("اضافه‌کاری",      hm_persian(pay.get('overtime_hours') or 0)),
-            ("جمعه‌کاری",       hm_persian(pay.get('friday_hours') or 0)),
-            ("شب‌کاری",         hm_persian(pay.get('night_hours') or 0)),
-            ("تعطیل‌کاری",      hm_persian(pay.get('holiday_hours') or 0)),
+            ("ساعت کارکرد",     hours_hms((pay.get('work_days') or 0) * 7.33)),
+            ("اضافه‌کاری",      hours_hms(pay.get('overtime_hours') or 0)),
+            ("فوق‌العاده جمعه بدون جایگزین", hours_hms(fri_split(pay)[0])),
+            ("فوق‌العاده جمعه با جایگزین",   hours_hms(fri_split(pay)[1])),
+            ("شب‌کاری",         hours_hms(pay.get('night_hours') or 0)),
+            ("تعطیل‌کاری",      hours_hms(pay.get('holiday_hours') or 0)),
             ("مأموریت",         f"{pay.get('mission_days') or 0:g} روز"),
-            ("کسر کار",         hm_persian(pay.get('absent_hours') or 0)),
+            ("کسر کار",         hours_hms(pay.get('absent_hours') or 0)),
         ]
 
         pay_items = [("حقوق پایه", pay.get('base_salary_monthly', 0))]
@@ -8289,7 +8562,7 @@ async def _app_capture_shot(self, shot, name):
             self.toast('اسکرین‌شات ساخته نشد؛ دوباره تلاش کنید.', True); return
         if isinstance(data, str):
             data = base64.b64decode(data)
-        path = os.path.join(export_dir(), f"{name}_{datetime.now():%Y%m%d_%H%M%S}.png")
+        path = out_path( f"{name}_{datetime.now():%Y%m%d_%H%M%S}.png")
         with open(path, 'wb') as f:
             f.write(bytes(data))
         self.file_dialog(path, '📸 اسکرین‌شات کامل ذخیره شد')
@@ -8719,7 +8992,8 @@ def _contract_editor_ui(app, ct):
     page = app.page
     cur = {'a': None, 'b': None}
     hist = {'u': [ct.template or ''], 'r': [], 'skip': False}
-    held = {'tok': None}
+    held = {'tok': None, 'cut': False, 'src': None}
+    mode = {'arr': False}
     editor = K(ft.TextField, value=ct.template, multiline=True, text_size=12.5,
                text_align=ft.TextAlign.RIGHT, min_lines=18,
                content_padding=pad_sym(12, 12), border_color=T()['line'], border_radius=10,
@@ -8785,9 +9059,9 @@ def _contract_editor_ui(app, ct):
     for _g in ct.VARIABLE_GROUPS:
         for _n, _l in _g[1]: labels[_n] = _l
     held_txt = ft.Text("", size=10, color=T()['purple'], expand=True)
+    paste_btn = gbtn("📌 چسباندن اینجا", None, lambda e: paste_tok(), T()['purple'], height=32)
     held_row = ft.Container(
-        ft.Row([held_txt,
-                gbtn("📌 چسباندن اینجا", None, lambda e: paste_tok(), T()['purple'], height=32),
+        ft.Row([held_txt, paste_btn,
                 tbtn("لغو", lambda e: cancel_tok())], spacing=6,
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
         bgcolor=alpha(T()['purple'], 0x22), padding=pad_sym(8, 4), border_radius=10, visible=False)
@@ -8797,7 +9071,10 @@ def _contract_editor_ui(app, ct):
         held_row.visible = bool(t_)
         if t_:
             nm = t_[2:-2].strip()
-            held_txt.value = f"🚚 در حال جابه‌جایی: {labels.get(nm, nm)} — مکان‌نما را ببرید و «چسباندن» بزنید"
+            held_txt.value = (f"🧩 «{labels.get(nm, nm)}» انتخاب شد — روی یکی از جاهای نقطه‌چین بین کلمات بزنید"
+                              if mode['arr'] else
+                              f"🚚 در حال جابه‌جایی: {labels.get(nm, nm)} — مکان‌نما را ببرید و «چسباندن» بزنید")
+            paste_btn.visible = not mode['arr']
         try: held_row.update()
         except Exception: pass
 
@@ -8810,7 +9087,7 @@ def _contract_editor_ui(app, ct):
                 m = mm; break
         if m is None:
             app.toast("مکان‌نما را داخل یک متغیر ({{...}}) بگذارید یا آن را انتخاب کنید", True); return
-        held['tok'] = m.group(0)
+        held['tok'] = m.group(0); held['cut'] = True; held['src'] = None
         editor.value = v[:m.start()] + v[m.end():]
         _set_cursor(editor, m.start(), cur)
         try: editor.update()
@@ -8823,23 +9100,33 @@ def _contract_editor_ui(app, ct):
             held['tok'] = None; push_hist(); refresh_status(); show_held()
 
     def cancel_tok():
-        if held['tok']:
-            _insert_snippet(editor, held['tok'], cur)    # لغو = برگرداندن به متن
-        held['tok'] = None; push_hist(); refresh_status(); show_held()
+        if held['tok'] and held.get('cut'):
+            _insert_snippet(editor, held['tok'], cur)    # لغو برش = برگرداندن به متن
+        held['tok'] = None; held['cut'] = False; held['src'] = None
+        push_hist(); refresh_status(); show_held()
+        if mode['arr']: refresh_arrange()
 
     # ── پنل کنترل فشرده (حدود یک‌دهم ارتفاع صفحه)، قابل باز و بسته شدن ──
     groups = list(ct.VARIABLE_GROUPS)
     cats = [("🎯 چینش", None)] + [(g[0], i) for i, g in enumerate(groups)]
     sel = {'cat': 0}
-    area_h = max(64, int((page.height or 700) * 0.075))
+    area_h = max(110, int((page.height or 700) * 0.17))
     cat_row = ft.Row(spacing=4, scroll=ft.ScrollMode.AUTO)
     chips_row = ft.Row(wrap=True, spacing=4, run_spacing=4)
     chips_box = ft.Container(content=ft.Column([chips_row], scroll=ft.ScrollMode.AUTO), height=area_h)
 
     def chip(label, snippet, bg):
-        return ft.Container(content=txt(label, 9.5, True, T()['primary']), bgcolor=bg,
-                            padding=pad_sym(7, 3), border_radius=10, ink=True,
-                            on_click=lambda e, s=snippet: insert(s))
+        c_ = ft.Container(content=txt(label, 10, False, T()['primary']), bgcolor=alpha(T()['primary'], 0x0f),
+                          padding=pad_sym(9, 5), border_radius=6, ink=True,
+                          border=border_all(1, alpha(T()['primary'], 0x44)),
+                          on_click=lambda e, s=snippet: panel_pick(s))
+        D = getattr(ft, 'Draggable', None)
+        if D is not None and snippet.startswith('{{'):
+            try:
+                return K(D, group='tok', content=c_, data='P|' + snippet)
+            except Exception:
+                pass
+        return c_
 
     def fill_panel():
         cat_row.controls.clear(); chips_row.controls.clear()
@@ -8847,8 +9134,8 @@ def _contract_editor_ui(app, ct):
             act = sel['cat'] == idx
             cat_row.controls.append(ft.Container(
                 content=txt(title, 10, True, '#ffffff' if act else T()['primary']),
-                bgcolor=T()['primary'] if act else alpha(T()['accent'], 0x44),
-                padding=pad_sym(9, 4), border_radius=12, ink=True,
+                bgcolor=T()['primary'] if act else alpha(T()['primary'], 0x14),
+                padding=pad_sym(10, 5), border_radius=6, ink=True,
                 on_click=lambda e, i=idx: pick(i)))
         if sel['cat'] == 0:
             for lbl, snip in CONTRACT_MARKERS_FA:
@@ -8878,11 +9165,163 @@ def _contract_editor_ui(app, ct):
 
     panel = ft.Container(
         content=ft.Column([
-            ft.Container(ft.Row([txt("🎛 پنل کنترل — کلیک روی هر مورد = درج در متن", 10, True, T()['primary'], expand=True),
+            ft.Container(ft.Row([txt("پنل متغیرها و ساختار سند — لمس = درج در متن (در حالت چینش: انتخاب برای قرار دادن)", 10, True, T()['primary'], expand=True),
                                  arrow]),
                          on_click=toggle, ink=True, padding=pad_sym(2, 2)),
             body], spacing=4),
-        padding=8, border_radius=10, bgcolor=T()['card'], border=border_all(1, T()['accent']))
+        padding=8, border_radius=8, bgcolor=T()['card'], border=border_all(1, T()['line']))
+
+    # ── حالت «چینش متغیرها»: کلمه‌ها و متغیرهای هر سطر؛ متغیر را بردار و بین کلمات بگذار ──
+    arrange_box = ft.Column(spacing=6, visible=False)
+    _LINE_PREFIX = re.compile(r'^\s*(#(?:TBL|/TBL|HR|BOX|T|C|L|R|P|J|S|A))(?:\s+(.*))?$')
+
+    def _parse_line(line):
+        m = _LINE_PREFIX.match(line)
+        if m and m.group(1) in ('#TBL', '#/TBL', '#HR'):
+            return line, None
+        prefix, rest = (m.group(1), m.group(2) or '') if m else ('', line)
+        atoms = []
+        for w in rest.split():
+            glue = False
+            for p_ in re.split(r'(\{\{[^{}]*\}\})', w):
+                if not p_: continue
+                atoms.append(dict(t=p_, var=p_.startswith('{{') and p_.endswith('}}'), glue=glue))
+                glue = True
+        return prefix, atoms
+
+    def _join_line(prefix, atoms):
+        out = ''
+        for i_, a_ in enumerate(atoms):
+            out += (a_['t'] if (i_ == 0 or a_.get('glue')) else ' ' + a_['t'])
+        return (prefix + ' ' + out).strip() if prefix else out
+
+    def place_at(li, ai, tok, src=None):
+        lines = (editor.value or '').split('\n')
+        parsed = {}
+        def get(i_):
+            if i_ not in parsed: parsed[i_] = _parse_line(lines[i_])
+            return parsed[i_]
+        if src is not None:
+            sl, sa = src
+            pre, ats = get(sl)
+            if ats is not None and 0 <= sa < len(ats):
+                ats.pop(sa)
+                if sl == li and sa < ai: ai -= 1
+        pre, ats = get(li)
+        if ats is None:
+            return
+        ats.insert(max(0, min(ai, len(ats))), dict(t=tok, var=True, glue=False))
+        for i_, (pre_, ats_) in parsed.items():
+            if ats_ is not None:
+                lines[i_] = _join_line(pre_, ats_)
+        editor.value = '\n'.join(lines)
+        held['tok'] = None; held['cut'] = False; held['src'] = None
+        try: editor.update()
+        except Exception: pass
+        push_hist(); refresh_status(); show_held(); refresh_arrange()
+
+    def pick_atom(li, ai, tok):
+        held['tok'] = tok; held['cut'] = False; held['src'] = (li, ai)
+        show_held(); refresh_arrange()
+
+    def panel_pick(snippet):
+        if mode['arr'] and snippet.startswith('{{'):
+            held['tok'] = snippet; held['cut'] = False; held['src'] = None
+            show_held(); refresh_arrange()
+        else:
+            insert(snippet)
+
+    def _drop(e, li, ai):
+        data = ''
+        try:
+            src_ctl = None
+            sid = getattr(e, 'src_id', None)
+            if sid is not None and hasattr(page, 'get_control'):
+                src_ctl = page.get_control(sid)
+            if src_ctl is None:
+                src_ctl = getattr(e, 'src', None)
+            data = str(getattr(src_ctl, 'data', '') or getattr(e, 'data', '') or '')
+        except Exception:
+            data = str(getattr(e, 'data', '') or '')
+        if data.startswith('P|'):
+            place_at(li, ai, data[2:])
+        elif data.startswith('M|'):
+            try:
+                _m, sl, sa, tok = data.split('|', 3)
+                place_at(li, ai, tok, (int(sl), int(sa)))
+            except Exception:
+                pass
+
+    def refresh_arrange():
+        arrange_box.controls.clear()
+        P_ = T()['primary']; hold = held['tok'] is not None
+        lines = (editor.value or '').split('\n')
+        Dg, Dt = getattr(ft, 'Draggable', None), getattr(ft, 'DragTarget', None)
+        for li, line in enumerate(lines[:400]):
+            if not line.strip():
+                continue
+            prefix, atoms = _parse_line(line)
+            if atoms is None:
+                arrange_box.controls.append(txt(prefix.strip(), 9, color=T()['muted']))
+                continue
+            wrap_ = ft.Row(wrap=True, spacing=0, run_spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            if prefix:
+                wrap_.controls.append(ft.Container(txt(prefix, 8, True, T()['muted']),
+                                                   padding=pad_sym(4, 2), border_radius=4,
+                                                   bgcolor=alpha(T()['muted'], 0x22), margin=pad_only(left=6)))
+
+            def gap(ai, li=li):
+                box = ft.Container(width=18 if hold else 5, height=26,
+                                   bgcolor=alpha(P_, 0x22) if hold else None,
+                                   border=border_all(1, alpha(P_, 0x66)) if hold else None,
+                                   border_radius=4, ink=hold,
+                                   on_click=(lambda e, li=li, ai=ai: place_at(li, ai, held['tok'], held['src']))
+                                   if hold else None)
+                if Dt is not None and hold:
+                    try:
+                        return K(Dt, group='tok', content=box,
+                                 on_accept=lambda e, li=li, ai=ai: _drop(e, li, ai))
+                    except Exception:
+                        pass
+                return box
+            for ai, a_ in enumerate(atoms):
+                if not a_.get('glue'):
+                    wrap_.controls.append(gap(ai))
+                if a_['var']:
+                    nm = a_['t'][2:-2].strip()
+                    chip_ = ft.Container(
+                        txt('⠿ ' + labels.get(nm, nm), 10, True, '#ffffff'),
+                        bgcolor=T()['primary'] if not (held['src'] == (li, ai)) else '#b45309',
+                        padding=pad_sym(8, 4), border_radius=6, ink=True,
+                        on_click=lambda e, li=li, ai=ai, tk=a_['t']: pick_atom(li, ai, tk))
+                    if Dg is not None:
+                        try:
+                            chip_ = K(Dg, group='tok', content=chip_, data=f"M|{li}|{ai}|{a_['t']}")
+                        except Exception:
+                            pass
+                    wrap_.controls.append(chip_)
+                else:
+                    wrap_.controls.append(txt(a_['t'], 11.5))
+            wrap_.controls.append(gap(len(atoms)))
+            arrange_box.controls.append(ft.Container(wrap_, padding=pad_sym(8, 5), border_radius=6,
+                                                     border=border_all(1, T()['line']), bgcolor=T()['card']))
+        try: arrange_box.update()
+        except Exception: pass
+
+    def toggle_arrange(e=None):
+        mode['arr'] = not mode['arr']
+        held['tok'] = None; held['cut'] = False; held['src'] = None
+        editor.visible = not mode['arr']
+        arrange_box.visible = mode['arr']
+        show_held()
+        if mode['arr']:
+            refresh_arrange()
+            app.toast("حالت چینش: یک متغیر (آبی) را لمس یا بکشید، سپس جای نقطه‌چین بین کلمات را بزنید")
+        else:
+            try: editor.update()
+            except Exception: pass
+        try: arrange_box.update(); editor.update()
+        except Exception: pass
 
     # ── اقدامات ──
     def do_save():
@@ -8933,7 +9372,7 @@ def _contract_editor_ui(app, ct):
 
     def make_pdf(ev=None):
         try:
-            path = os.path.join(export_dir(), f"contract_{(ct.emp or {}).get('id', 'sample')}_{datetime.now():%Y%m%d_%H%M%S}.pdf")
+            path = out_path( f"contract_{(ct.emp or {}).get('id', 'sample')}_{datetime.now():%Y%m%d_%H%M%S}.pdf")
             ct.render_pdf(path, editor.value or ct.template)
             app.file_dialog(path, "📄 قرارداد PDF ساخته شد")
         except Exception as ex:
@@ -8951,9 +9390,11 @@ def _contract_editor_ui(app, ct):
         obtn("↷ تکرار", _ic("REDO"), redo, height=34),
         obtn("✂ برش متغیر", _ic("CONTENT_CUT"), cut_tok, height=34),
         obtn("⏎ خط جدید", _ic("KEYBOARD_RETURN"), lambda e: insert("\n"), height=34),
+        gbtn("🧩 چینش متغیرها ⇄ ✍ متن", _ic("DRAG_INDICATOR"), toggle_arrange, T()['primary'], height=34),
     ], spacing=6, run_spacing=6, wrap=True)
-    return dict(editor=editor, status=status, panel=panel, toolbar=toolbar, editbar=editbar, held=held_row,
-                fn=dict(cut=cut_tok, paste=paste_tok, undo=undo, redo=redo, insert=insert, cur=cur))
+    return dict(editor=editor, status=status, panel=panel, toolbar=toolbar, editbar=editbar, held=held_row, arrange=arrange_box,
+                fn=dict(cut=cut_tok, paste=paste_tok, undo=undo, redo=redo, insert=insert, cur=cur,
+                        place=place_at, parse=_parse_line, refresh=refresh_arrange, toggle=toggle_arrange))
 
 
 def _contract_layout(app, ui, intro=None, height=None):
@@ -8978,7 +9419,7 @@ def _contract_layout(app, ui, intro=None, height=None):
                             bgcolor=alpha(P, 0x14))
     bt = mk("▾ ابزارها", 'tools', tools)
     bv = mk("▾ متغیرها", 'vars', panel)
-    scroller = ft.Column([ui['editor'], ft.Container(height=120)], scroll=ft.ScrollMode.ALWAYS,
+    scroller = ft.Column([ui['editor'], ui['arrange'], ft.Container(height=120)], scroll=ft.ScrollMode.ALWAYS,
                          spacing=0, expand=True)
     nav = ft.Row([bt, bv, ft.Container(expand=True),
                   iconbtn(_ic('VERTICAL_ALIGN_TOP'), lambda e: _scroll_col(page, scroller, False), P, 24, 'ابتدای قرارداد'),
@@ -9322,11 +9763,13 @@ def slip_png(path, company, pay, emp, dept, dets, loan_insts=None):
         ded.append(("قسط وام", fmt(pay['loan_install'])))
     total_ded = (pay.get('gross_salary') or 0) - (pay.get('net_salary') or 0)
     work = [("کارکرد", f"{pay.get('work_days') or 0:g} روز"),
-            ("اضافه‌کاری", hours_to_hm(pay.get('overtime_hours') or 0)),
-            ("شب‌کاری", hours_to_hm(pay.get('night_hours') or 0)),
-            ("جمعه‌کاری", hours_to_hm(pay.get('friday_hours') or 0)),
-            ("تعطیل‌کاری", hours_to_hm(pay.get('holiday_hours') or 0)),
-            ("کسر کار", hours_to_hm(pay.get('absent_hours') or 0)),
+            ("ساعت کارکرد", hours_hms((pay.get('work_days') or 0) * 7.33)),
+            ("اضافه‌کاری", hours_hms(pay.get('overtime_hours') or 0)),
+            ("شب‌کاری", hours_hms(pay.get('night_hours') or 0)),
+            ("فوق‌العاده جمعه بدون جایگزین", hours_hms(fri_split(pay)[0])),
+            ("فوق‌العاده جمعه با جایگزین", hours_hms(fri_split(pay)[1])),
+            ("تعطیل‌کاری", hours_hms(pay.get('holiday_hours') or 0)),
+            ("کسر کار", hours_hms(pay.get('absent_hours') or 0)),
             ("مأموریت", f"{pay.get('mission_days') or 0:g} روز")]
     blocks = [
         ('header', company.get('name') or APP_TITLE,
@@ -9349,17 +9792,19 @@ def slip_png(path, company, pay, emp, dept, dets, loan_insts=None):
 def contract_png(path, ct, template):
     text = ct._render_text(template or ct.template)
     c = ct.company or {}; e = ct.emp or {}
-    blocks = [('header', c.get('name') or APP_TITLE, 'قرارداد کار')]
+    blocks = [('f_header', c.get('name') or APP_TITLE, c.get('address') or '')]
     for kind, content in Contract.parse(text):
-        if kind == 'title': blocks.append(('title', content, 30))
-        elif kind == 'section': blocks.append(('band', content, (184, 134, 11)))
-        elif kind == 'article': blocks.append(('band', content, (60, 95, 140)))
-        elif kind == 'para': blocks.append(('para', content[0], 21, content[1]))
-        elif kind == 'box': blocks.append(('box', content))
+        if kind == 'title': blocks.append(('f_title', content))
+        elif kind == 'section': blocks.append(('f_section', content))
+        elif kind == 'article': blocks.append(('f_article', content))
+        elif kind == 'para': blocks.append(('f_para', content[0], content[1]))
+        elif kind == 'box': blocks.append(('f_box', content))
         elif kind == 'hr': blocks.append(('hr',))
-        elif kind == 'table': blocks.append(('grid', content))
-    blocks.append(('grid', [[f"کارفرما: {c.get('sign_manager') or c.get('name') or '—'}",
-                             f"کارگر: {e.get('first_name', '')} {e.get('last_name', '')}".strip()]]))
+        elif kind == 'table': blocks.append(('f_table', content))
+    blocks.append(('spacer', 24))
+    blocks.append(('f_sign', [("کارفرما", c.get('name') or '—', f"مدیرعامل: {c.get('sign_manager') or '—'}"),
+                              ("کارگر", f"{e.get('first_name', '')} {e.get('last_name', '')}".strip() or '—',
+                               f"کد ملی: {e.get('national_code') or '—'}")]))
     blocks.append(('note', f"{APP_TITLE} • {DEVELOPER} • {DEVELOPER_PHONE}"))
     return render_doc_png(path, blocks)
 
@@ -9380,7 +9825,7 @@ def report_png(path, company, year, month, pays, by_dept):
 
 
 def _png_path(name):
-    return os.path.join(export_dir(), f"{name}_{datetime.now():%Y%m%d_%H%M%S}.png")
+    return out_path( f"{name}_{datetime.now():%Y%m%d_%H%M%S}.png")
 
 
 
@@ -10873,6 +11318,8 @@ def render_doc_image(blocks, width=900, frame=True):
         return fonts[k]
     NAVY, GOLD, TXT, MUT = (30, 58, 95), (240, 180, 41), (20, 30, 45), (100, 116, 139)
     LINE, SOFT, CREAM = (170, 185, 205), (244, 248, 252), (255, 248, 220)
+    FK, FG, FL = (20, 20, 20), (90, 90, 90), (60, 60, 60)
+    formal = bool(blocks) and str(blocks[0][0]).startswith('f_')
     M = S(30); CW = width - 2 * M
     marks = []
 
@@ -10971,6 +11418,74 @@ def render_doc_image(blocks, width=900, frame=True):
                 mid(M, M + CW, y, b[1], 17, MUT); y += S(32)
             elif k == 'hr':
                 d.line([M + S(30), y + S(8), M + CW - S(30), y + S(8)], fill=GOLD, width=2); y += S(20)
+            # ───────── طراحی رسمی قرارداد ─────────
+            elif k == 'f_header':
+                mid(M, M + CW, y, b[1], 30, FK, True)
+                if b[2]: mid(M, M + CW, y + S(48), b[2], 15, FG)
+                d.line([M, y + S(80), M + CW, y + S(80)], fill=FK, width=2)
+                y += S(100)
+            elif k == 'f_title':
+                mid(M, M + CW, y, b[1], 34, FK, True)
+                d.line([M + S(150), y + S(60), M + CW - S(150), y + S(60)], fill=FK, width=3)
+                d.line([M + S(150), y + S(67), M + CW - S(150), y + S(67)], fill=FK, width=1)
+                y += S(86)
+            elif k == 'f_section':
+                right(M + CW - S(8), y, b[1], 24, FK, True)
+                d.line([M, y + S(40), M + CW, y + S(40)], fill=FK, width=2)
+                y += S(56)
+            elif k == 'f_article':
+                right(M + CW - S(8), y, b[1], 22, FK, True); y += S(42)
+            elif k in ('f_para', 'f_box'):
+                sz = 21; al = b[2] if k == 'f_para' and len(b) > 2 else 'J'
+                boxed = k == 'f_box'
+                inner = CW - S(36 if boxed else 20)
+                lines = wrap(b[1], sz, inner)
+                lh = int(S(sz) * 1.75)
+                if boxed:
+                    hh = len(lines) * lh + S(28)
+                    d.rectangle([M, y, M + CW, y + hh], fill=(244, 244, 244), outline=FK, width=2)
+                    y += S(14)
+                xr = M + CW - S(18 if boxed else 10)
+                for li_, ln in enumerate(lines):
+                    ws_ = ln.split()
+                    last = li_ == len(lines) - 1
+                    if al == 'C': mid(M, M + CW, y, ln, sz, FK)
+                    elif al == 'J' and not last and len(ws_) > 1:
+                        wl = [tw(w_, sz) for w_ in ws_]
+                        gap = (inner - sum(wl)) / (len(ws_) - 1)
+                        if 0 <= gap <= S(70):
+                            x_ = xr
+                            for w_, wd_ in zip(ws_, wl):
+                                right(x_, y, w_, sz, FK); x_ -= wd_ + gap
+                        else:
+                            right(xr, y, ln, sz, FK)
+                    else:
+                        right(xr, y, ln, sz, FK)
+                    y += lh
+                y += S(26 if boxed else 10)
+            elif k == 'f_table':
+                for row in b[1]:
+                    n = max(1, len(row)); cw_ = CW / n
+                    for j in range(n):
+                        cell = row[j] if j < len(row) else ''
+                        lab = (n == 4 and j % 2 == 0) or (n == 2 and j == 0)
+                        x1 = M + CW - j * cw_; x0 = x1 - cw_
+                        d.rectangle([x0, y, x1, y + S(46)], fill=(236, 236, 236) if lab else (255, 255, 255), outline=FL)
+                        s2, z2 = fit(cell, 19, cw_ - S(16))
+                        mid(x0, x1, y + S(10), s2, z2, FK, lab)
+                    y += S(46)
+                y += S(18)
+            elif k == 'f_sign':
+                bw = (CW - S(30)) / 2
+                for j, (ttl, nm, sub) in enumerate(b[1]):
+                    x1 = M + CW - j * (bw + S(30)); x0 = x1 - bw
+                    d.rectangle([x0, y, x1, y + S(170)], outline=FK, width=2)
+                    d.line([x0, y + S(40), x1, y + S(40)], fill=FK, width=2)
+                    mid(x0, x1, y + S(8), ttl, 21, FK, True)
+                    mid(x0, x1, y + S(52), sub, 15, FG)
+                    mid(x0, x1, y + S(84), nm, 19, FK)
+                    mid(x0, x1, y + S(140), 'امضاء / مهر', 15, FG)
+                y += S(190)
             # ───────── بلوک‌های جدید ─────────
             elif k == 'spacer':
                 y += S(b[1])
@@ -11077,7 +11592,7 @@ def render_doc_image(blocks, width=900, frame=True):
     d._image = img
     run(d)
     if frame:
-        d.rectangle([S(8), S(8), width - S(9), int(h) - S(9)], outline=(55, 80, 110), width=3)
+        d.rectangle([S(8), S(8), width - S(9), int(h) - S(9)], outline=FK if formal else (55, 80, 110), width=2 if formal else 3)
     return img, marks, int(h)
 
 
@@ -11791,7 +12306,7 @@ class _PortalHandler(http.server.BaseHTTPRequestHandler):
                 dept = db.q1("SELECT * FROM departments WHERE id=?", (e.get('dept_id'),)) if e.get('dept_id') else None
                 if path == '/print/ts':
                     return self._send(_print_html(ctx.company, e, dept, res, sched))
-                tmp = os.path.join(tempfile.gettempdir(), f"ts_{secrets.token_hex(6)}.pdf")
+                tmp = os.path.join(tmp_dir(), f"ts_{secrets.token_hex(6)}.pdf")
                 try:
                     render_doc_pdf(tmp, ts_doc_blocks(ctx.company, e, dept, res, sched, ctx.policy), 1240)
                     with open(tmp, 'rb') as fh:
@@ -11992,7 +12507,7 @@ def _app_show_doc(self, blocks, base, title='پیش‌نمایش', on_close=None
     """
     st = {}
     try:
-        tmp = os.path.join(tempfile.gettempdir(), f"prev_{secrets.token_hex(4)}.png")
+        tmp = os.path.join(tmp_dir(), f"prev_{secrets.token_hex(4)}.png")
         render_doc_png(tmp, blocks, 900)
         with open(tmp, 'rb') as fh:
             b64 = base64.b64encode(fh.read()).decode('ascii')
@@ -13316,6 +13831,47 @@ def _app_v_timesheet(self):
     except Exception:
         leave_line = ''
     warn = [txt('⚠ ' + w, 10, True, '#b45309') for w in res['warnings'][:6]]
+    def month_complete(e):
+        """تکمیل خودکار ماه: روز کاری ثبت‌نشده = حاضر کامل؛ جمعه/تعطیلِ ثبت‌نشده = تعطیلی کارگاه (روز عادی).
+        روزهای دارای ثبت، روزهای آینده و قبل از استخدام دست‌نخورده می‌مانند."""
+        todo = []
+        for d_ in res['days']:
+            if d_['cls'] == 'pre_hire' or d_['status'] or d_['in1'] or d_['leave_min'] or d_['note'] or d_.get('repl_date'):
+                continue
+            if ctx.today and d_['date'] > ctx.today:
+                continue
+            todo.append((d_['date'], 'closed' if (d_['kind'] in ('rest', 'holiday') or not d_['required']) else 'present'))
+        if not todo:
+            self.toast('روز ثبت‌نشده‌ای برای تکمیل نیست'); return
+        n_work = sum(1 for _d, st_ in todo if st_ == 'present')
+
+        def go():
+            n_ = 0
+            for dk, st_ in todo:
+                ok_, _m = ts_save_day(self.db, self.cid, emp['id'], dk, dict(status=st_), 'admin')
+                n_ += 1 if ok_ else 0
+            self.toast(f'✅ ماه تکمیل شد: {n_} روز ثبت شد')
+            self.refresh()
+        self.confirm(f"{len(todo)} روز ثبت‌نشده تکمیل شود؟\n• {n_work} روز کاری ← «حاضر کامل»\n"
+                     f"• {len(todo) - n_work} جمعه/تعطیل ← «تعطیلی کارگاه» (روز عادی)\n"
+                     "روزهایی که قبلاً ثبت کرده‌اید تغییر نمی‌کنند.", go, 'تکمیل خودکار ماه', False)
+
+    def month_reset(e):
+        """برگرداندن همه روزهای ماه به «ثبت‌نشده» (حذف وضعیت، ساعت‌ها، مرخصی و یادداشت‌های ماه)."""
+        pre = f"{y}/{m:02d}/"
+        n_rec = len([d_ for d_ in res['days'] if d_['status'] or d_['in1'] or d_['leave_min'] or d_['note'] or d_.get('repl_date')])
+        if not n_rec:
+            self.toast('این ماه روز ثبت‌شده‌ای ندارد'); return
+
+        def go():
+            with self.db.tx() as c_:
+                c_.execute("DELETE FROM att_days WHERE company_id=? AND emp_id=? AND jdate LIKE ?",
+                           (self.cid, emp['id'], pre + '%'))
+            self.toast('✅ همه روزهای ماه به حالت «ثبت‌نشده» برگشت')
+            self.refresh()
+        self.confirm(f"ثبت {n_rec} روز این ماه (وضعیت، ساعت ورود/خروج، مرخصی و یادداشت) برای «{_emp_name(emp)}» "
+                     "پاک شود و همه روزها «ثبت‌نشده» شوند؟", go, 'بازگردانی ماه', True)
+
     def bulk_closed(e):
         todo = [d_ for d_ in res['days']
                 if d_['kind'] in ('rest', 'holiday') and d_['cls'] in ('rest', 'holiday')
@@ -13343,6 +13899,8 @@ def _app_v_timesheet(self):
                             9, color=MUTED)], spacing=4), padding=8),
         *warn,
         sched_dd,
+        ft.Row([gbtn('✅ تکمیل خودکار ماه', _ic('AUTO_FIX_HIGH', 'DONE_ALL'), month_complete, T()['success'], expand=True),
+                obtn('↺ همه روزها = ثبت‌نشده', _ic('RESTART_ALT'), month_reset, expand=True)], spacing=6),
         ft.Row([obtn('🏪 جمعه‌ها و تعطیلاتِ بدون ثبت = روز عادی', _ic('STOREFRONT'), bulk_closed, expand=True)]),
         ft.Row([gbtn('🖨 پیش‌نمایش و چاپ تایم‌شیت', _ic('PRINT'), print_ts, P, expand=True)]),
         K(ft.Switch, label='همراه با علت و معلول محاسبات', value=st['causes'], active_color=A, on_change=toggle_causes),
@@ -13889,7 +14447,7 @@ def export_leave_csv(year, month, rows):
                 [r['per'][m]['used'] for m in range(1, 13)] + [r['year_used'], r['quota'], r['remain']]
                 for i, r in enumerate(rows, 1)]
         name = f"leave_{year}_yearly.csv"
-    path = os.path.join(export_dir(), name)
+    path = out_path( name)
     write_csv(path, hdr, data)
     return path
 
@@ -14370,7 +14928,7 @@ def _app_v_files(self):
         rebuild()
 
     def _import_bytes(data, fname='import'):
-        tmp = os.path.join(export_dir(), f"imported_{datetime.now():%Y%m%d_%H%M%S}.db")
+        tmp = out_path( f"imported_{datetime.now():%Y%m%d_%H%M%S}.db")
         with open(tmp, 'wb') as fh:
             fh.write(data)
         try:
@@ -14544,11 +15102,23 @@ class _Splash:
         self.gear = self.gear2 = self.logo = self.msg = None
 
     def show(self):
+        p = self.page
+        # مرحله ۱: فوری و ساده (تضمین می‌کند صفحه سفید دیده نشود، حتی اگر نسخه Flet انیمیشن‌ها را نپذیرد)
         try:
-            p = self.page
             p.rtl = True; p.padding = 0; p.bgcolor = '#12263f'
             try: p.theme_mode = ft.ThemeMode.DARK
             except Exception: pass
+            quick = K(ft.Container, expand=True, alignment=center(), bgcolor='#12263f',
+                      content=K(ft.Column, [K(ft.ProgressRing, width=60, height=60, color='#4fc3f7'),
+                                            ft.Container(height=16),
+                                            ft.Text('عرفان حساب', size=26, weight=ft.FontWeight.BOLD, color='#ffffff')],
+                                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                alignment=ft.MainAxisAlignment.CENTER))
+            p.controls.clear(); p.add(quick); p.update()
+        except Exception:
+            log_error('splash-quick: ' + traceback.format_exc())
+        # مرحله ۲: نسخه‌ی انیمیشنی کامل
+        try:
             anim = lambda ms: K(ft.Animation, ms, getattr(getattr(ft, 'AnimationCurve', None), 'LINEAR', 'linear'))
             self.gear = K(ft.Icon, _ic('SETTINGS'), size=150, color=alpha('#4fc3f7', 0x66),
                           rotate=0, animate_rotation=anim(900))
@@ -14581,6 +15151,7 @@ class _Splash:
             threading.Timer(0.05, self._tick).start()
         except Exception:
             self.on = False
+            log_error('splash-full: ' + traceback.format_exc())
 
     def _tick(self):
         if not self.on: return

@@ -30,6 +30,15 @@ icon = "assets/icon.png"
 [tool.flet.app]
 path = "."
 
+# صفحه اجرای اولیه به‌جای صفحه سفید (Flet 0.28)
+[tool.flet.app.startup_screen]
+show = true
+message = "در حال اجرای عرفان حساب…"
+
+[tool.flet.splash]
+color = "#12263f"
+dark_color = "#12263f"
+
 [tool.flet.android]
 package = "ir.erfan.erfanhesab"
 min_sdk_version = 21
